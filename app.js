@@ -168,6 +168,21 @@ db.serialize(() => {
         FOREIGN KEY(creator_id) REFERENCES users(id)
     )`);
 
+    // Контакты компаний
+    db.run(`CREATE TABLE IF NOT EXISTS company_contacts (
+        id INTEGER PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        contact_name TEXT NOT NULL,
+        position TEXT,
+        email TEXT,
+        phone TEXT,
+        telegram TEXT,
+        notes TEXT,
+        added_by INTEGER,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(added_by) REFERENCES users(id)
+    )`);
+
     // Helper function to check if column exists
     function columnExists(table, column, callback) {
         db.all(`PRAGMA table_info(${table})`, (err, rows) => {
@@ -206,6 +221,34 @@ db.serialize(() => {
         if (!exists) {
             db.run("ALTER TABLE invoices ADD COLUMN invoice_date DATE DEFAULT CURRENT_DATE", (err) => {
                 if (err) console.log("ALTER invoice_date error:", err.message);
+            });
+        }
+    });
+
+    // Добавляем поля для статуса сотрудников
+    columnExists('users', 'status', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'offline'", (err) => {
+                if (err) console.log("ALTER status error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'status_message', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN status_message TEXT", (err) => {
+                if (err) console.log("ALTER status_message error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'last_activity', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN last_activity DATETIME", (err) => {
+                if (err) {
+                    console.log("ALTER last_activity error:", err.message);
+                } else {
+                    // Устанавливаем текущее время для всех существующих пользователей
+                    db.run("UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE last_activity IS NULL");
+                }
             });
         }
     });
@@ -314,7 +357,8 @@ const workKeyboard = {
     reply_markup: {
         keyboard: [
             ['📋 Мои задачи', '🎯 Мероприятия'],
-            ['📄 Создать инвойс'],
+            ['📄 Создать инвойс', '📇 Поиск контактов'],
+            ['👥 Сотрудники онлайн', '⚡ Мой статус'],
             ['🔙 В главное меню']
         ],
         resize_keyboard: true
@@ -392,6 +436,7 @@ const adminKeyboard = {
             ['🗓️ Мероприятия', '📢 Рассылка'],
             ['👥 Пользователи', '📊 Статистика'],
             ['💰 Управление балансом', '🎉 Достижения'],
+            ['📇 Контакты'],
             ['🔙 Выйти из админки']
         ],
         resize_keyboard: true
@@ -555,7 +600,10 @@ bot.on('message', (msg) => {
         // [DEBUG LOG] Log incoming message and current state
         const currentState = global.userScreenshots[telegramId];
         console.log(`[MESSAGE DEBUG] User ${telegramId} sent: "${text}" | Current state: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
-        
+
+        // Автоматическое обновление активности пользователя
+        updateUserActivity(telegramId);
+
         // Обработка команд достижений
         if (text && text.startsWith('/like_')) {
             const achievementId = parseInt(text.replace('/like_', ''));
@@ -753,6 +801,9 @@ function showEventDetails(chatId, telegramId, event) {
          if (text === '🎉 Достижения') {
              showAchievementsAdmin(chatId, telegramId);
          }
+         if (text === '📇 Контакты') {
+             showContactsAdmin(chatId, telegramId);
+         }
          if (text === '🔙 Назад в админку') {
              backToAdminMenu(chatId, telegramId);
          }
@@ -770,6 +821,38 @@ function showEventDetails(chatId, telegramId, event) {
          else if (text === '📊 Балансы') {
              showBalances(chatId, telegramId);
          }
+        // ========== КОНТАКТЫ АДМИН ==========
+        else if (text === '➕ Добавить контакт') {
+            startAddContact(chatId, telegramId);
+            return;
+        }
+        else if (text === '📋 Все контакты') {
+            showAllContacts(chatId, telegramId);
+        }
+        // ========== СТАТУСЫ СОТРУДНИКОВ ==========
+        else if (text === '🟢 Онлайн') {
+            changeUserStatus(chatId, telegramId, 'online');
+            return;
+        }
+        else if (text === '🟡 Не на месте') {
+            changeUserStatus(chatId, telegramId, 'away');
+            return;
+        }
+        else if (text === '🔴 Не беспокоить') {
+            changeUserStatus(chatId, telegramId, 'busy');
+            return;
+        }
+        else if (text === '⚫ Оффлайн') {
+            changeUserStatus(chatId, telegramId, 'offline');
+            return;
+        }
+        else if (text === '✏️ Изменить сообщение') {
+            startStatusMessage(chatId, telegramId);
+            return;
+        }
+        else if (text === '📊 Мой текущий статус') {
+            showCurrentStatus(chatId, telegramId);
+        }
         else if (text === '🔙 Выйти из админки') {
             exitAdminMode(chatId, telegramId);
         }
@@ -796,6 +879,15 @@ function showEventDetails(chatId, telegramId, event) {
                 };
                 bot.sendMessage(chatId, "📄 Создание инвойса. Шаг 1: Название организации? (Введите на английском для PDF)").catch(console.error);
             });
+        } else if (text === '📇 Поиск контактов') {
+            startContactSearch(chatId, telegramId);
+            return;
+        } else if (text === '👥 Сотрудники онлайн') {
+            showEmployeesOnline(chatId, telegramId);
+            return;
+        } else if (text === '⚡ Мой статус') {
+            showStatusMenu(chatId, telegramId);
+            return;
         } else if (text === '🎮 Развлечения') {
             showFunMenu(chatId);
         }
@@ -823,8 +915,13 @@ function showEventDetails(chatId, telegramId, event) {
         if (text === '📊 Мой прогресс') {
             showInternProgress(chatId, telegramId);
         }
-        if (text === '🔄 Главное меню' || text === '🔙 В главное меню' || text === '🔙 Главное меню' || text === '👤 Мой профиль') {
+        if (text === '🔄 Главное меню' || text === '🔙 В главное меню' || text === '🔙 Главное меню') {
             console.log(`[NAV DEBUG] Direct main menu trigger for user ${telegramId} (text: "${text}")`);
+            backToMainMenu(chatId, telegramId);
+            return;
+        }
+        if (text === '👤 Мой профиль') {
+            console.log(`[NAV DEBUG] Profile button pressed for user ${telegramId}`);
             backToMainMenu(chatId, telegramId);
             return;
         } else if (text === '🔙 Назад в меню') {
@@ -862,12 +959,14 @@ function showEventDetails(chatId, telegramId, event) {
         }
         if (text === '🎁 Подарить баллы') {
             startGiftProcess(chatId, telegramId);
+            return;
         }
         if (text === '🏆 Рейтинг') {
             showRating(chatId, telegramId);
         }
         if (text === '🎉 Похвастаться') {
             startAchievementCreation(chatId, telegramId);
+            return;
         }
 
         // ========== PVP МЕНЮ ==========
@@ -1275,6 +1374,24 @@ function handleTextInput(chatId, telegramId, text, username) {
         // Обработка процесса подарков
         if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'gift') {
             handleGiftProcess(chatId, telegramId, text);
+            return;
+        }
+
+        // Обработка поиска контактов
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'contact_search') {
+            handleContactSearch(chatId, telegramId, text);
+            return;
+        }
+
+        // Обработка создания контактов
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'contact_creation') {
+            handleContactCreation(chatId, telegramId, text);
+            return;
+        }
+
+        // Обработка сообщения статуса
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'status_message') {
+            handleStatusMessage(chatId, telegramId, text);
             return;
         }
 
@@ -4668,6 +4785,610 @@ process.on('SIGINT', () => {
         process.exit(0);
     });
 });
+
+// ========== ФУНКЦИИ УПРАВЛЕНИЯ КОНТАКТАМИ ==========
+
+function startContactSearch(chatId, telegramId) {
+    global.userScreenshots[telegramId] = {
+        type: 'contact_search',
+        step: 'enter_company'
+    };
+
+    bot.sendMessage(chatId,
+        '📇 ПОИСК КОНТАКТОВ КОМПАНИИ 🔍\n\n' +
+        '💼 Введите название компании для поиска контактов:\n' +
+        '💡 Например: "Google", "Microsoft", "Apple"\n' +
+        '⚡ Или часть названия для широкого поиска').catch(console.error);
+}
+
+function handleContactSearch(chatId, telegramId, text) {
+    try {
+        const searchData = global.userScreenshots[telegramId];
+
+        if (searchData.step === 'enter_company') {
+            const companyName = text.trim();
+
+            // Поиск контактов по названию компании (с частичным совпадением)
+            db.all(`SELECT * FROM company_contacts WHERE company_name LIKE ? ORDER BY company_name, contact_name`,
+                [`%${companyName}%`], (err, contacts) => {
+                if (err) {
+                    console.error('❌ Contact search error:', err);
+                    bot.sendMessage(chatId, '❌ Ошибка поиска контактов!').catch(console.error);
+                    return;
+                }
+
+                delete global.userScreenshots[telegramId];
+
+                if (!contacts || contacts.length === 0) {
+                    bot.sendMessage(chatId,
+                        `📇 РЕЗУЛЬТАТЫ ПОИСКА 🔍\n\n` +
+                        `🔎 Запрос: "${companyName}"\n\n` +
+                        `❌ Контакты не найдены!\n\n` +
+                        `💡 Попробуйте:\n` +
+                        `• Изменить запрос\n` +
+                        `• Использовать часть названия\n` +
+                        `• Обратиться к админу для добавления`).catch(console.error);
+                    return;
+                }
+
+                let contactsText = `📇 РЕЗУЛЬТАТЫ ПОИСКА 🔍\n\n`;
+                contactsText += `🔎 Запрос: "${companyName}"\n`;
+                contactsText += `📊 Найдено: ${contacts.length} контакт(ов)\n\n`;
+
+                let currentCompany = '';
+                contacts.forEach((contact, index) => {
+                    if (contact.company_name !== currentCompany) {
+                        currentCompany = contact.company_name;
+                        contactsText += `🏢 ${contact.company_name}\n`;
+                    }
+
+                    contactsText += `   👤 ${contact.contact_name}`;
+                    if (contact.position) contactsText += ` (${contact.position})`;
+                    contactsText += `\n`;
+
+                    if (contact.email) contactsText += `   ✉️ ${contact.email}\n`;
+                    if (contact.phone) contactsText += `   📞 ${contact.phone}\n`;
+                    if (contact.telegram) contactsText += `   💬 ${contact.telegram}\n`;
+                    if (contact.notes) contactsText += `   📝 ${contact.notes}\n`;
+                    contactsText += `\n`;
+                });
+
+                // Разбиваем на части если слишком длинное
+                if (contactsText.length > 4000) {
+                    const parts = [];
+                    let currentPart = `📇 РЕЗУЛЬТАТЫ ПОИСКА 🔍\n\n🔎 Запрос: "${companyName}"\n📊 Найдено: ${contacts.length} контакт(ов)\n\n`;
+
+                    contacts.forEach((contact) => {
+                        let contactInfo = '';
+                        if (contact.company_name !== currentCompany) {
+                            currentCompany = contact.company_name;
+                            contactInfo += `🏢 ${contact.company_name}\n`;
+                        }
+                        contactInfo += `   👤 ${contact.contact_name}`;
+                        if (contact.position) contactInfo += ` (${contact.position})`;
+                        contactInfo += `\n`;
+                        if (contact.email) contactInfo += `   ✉️ ${contact.email}\n`;
+                        if (contact.phone) contactInfo += `   📞 ${contact.phone}\n`;
+                        if (contact.telegram) contactInfo += `   💬 ${contact.telegram}\n`;
+                        if (contact.notes) contactInfo += `   📝 ${contact.notes}\n`;
+                        contactInfo += `\n`;
+
+                        if (currentPart.length + contactInfo.length > 4000) {
+                            parts.push(currentPart);
+                            currentPart = contactInfo;
+                        } else {
+                            currentPart += contactInfo;
+                        }
+                    });
+                    if (currentPart) parts.push(currentPart);
+
+                    parts.forEach((part, index) => {
+                        setTimeout(() => {
+                            bot.sendMessage(chatId, part + (index < parts.length - 1 ? '\n📄 Продолжение...' : '')).catch(console.error);
+                        }, index * 1000);
+                    });
+                } else {
+                    bot.sendMessage(chatId, contactsText).catch(console.error);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('❌ Handle contact search error:', error);
+        delete global.userScreenshots[telegramId];
+    }
+}
+
+function showContactsAdmin(chatId, telegramId) {
+    const contactsKeyboard = {
+        reply_markup: {
+            keyboard: [
+                ['➕ Добавить контакт', '📋 Все контакты'],
+                ['🗑️ Удалить контакт', '✏️ Редактировать контакт'],
+                ['🔙 Назад в админку']
+            ],
+            resize_keyboard: true
+        }
+    };
+
+    bot.sendMessage(chatId,
+        '📇 УПРАВЛЕНИЕ КОНТАКТАМИ 👥\n\n' +
+        '➕ Добавить контакт - Добавить новый контакт компании\n' +
+        '📋 Все контакты - Просмотр всех контактов\n' +
+        '✏️ Редактировать контакт - Изменить данные\n' +
+        '🗑️ Удалить контакт - Удалить контакт\n\n' +
+        '👇 Выберите действие:', contactsKeyboard).catch(console.error);
+}
+
+function startAddContact(chatId, telegramId) {
+    global.userScreenshots[telegramId] = {
+        type: 'contact_creation',
+        step: 'enter_company',
+        data: {}
+    };
+
+    bot.sendMessage(chatId,
+        '➕ ДОБАВЛЕНИЕ КОНТАКТА 👤\n\n' +
+        '🏢 Шаг 1: Введите название компании:\n' +
+        '💡 Например: "Google", "Microsoft", "ООО Рога и Копыта"').catch(console.error);
+}
+
+function handleContactCreation(chatId, telegramId, text) {
+    try {
+        const contactData = global.userScreenshots[telegramId];
+
+        if (contactData.step === 'enter_company') {
+            contactData.data.company_name = text.trim();
+            contactData.step = 'enter_name';
+
+            bot.sendMessage(chatId,
+                `🏢 Компания: "${text}"\n\n` +
+                '👤 Шаг 2: Введите имя контактного лица:\n' +
+                '💡 Например: "Иван Петров", "John Smith"').catch(console.error);
+
+        } else if (contactData.step === 'enter_name') {
+            contactData.data.contact_name = text.trim();
+            contactData.step = 'enter_position';
+
+            bot.sendMessage(chatId,
+                `👤 Имя: "${text}"\n\n` +
+                '💼 Шаг 3: Введите должность (или "пропустить"):\n' +
+                '💡 Например: "Менеджер по продажам", "CEO", "Директор"').catch(console.error);
+
+        } else if (contactData.step === 'enter_position') {
+            if (text.toLowerCase() !== 'пропустить') {
+                contactData.data.position = text.trim();
+            }
+            contactData.step = 'enter_email';
+
+            bot.sendMessage(chatId,
+                `💼 Должность: "${text === 'пропустить' ? 'Не указана' : text}"\n\n` +
+                '✉️ Шаг 4: Введите email (или "пропустить"):\n' +
+                '💡 Например: "ivan@company.com"').catch(console.error);
+
+        } else if (contactData.step === 'enter_email') {
+            if (text.toLowerCase() !== 'пропустить') {
+                contactData.data.email = text.trim();
+            }
+            contactData.step = 'enter_phone';
+
+            bot.sendMessage(chatId,
+                `✉️ Email: "${text === 'пропустить' ? 'Не указан' : text}"\n\n` +
+                '📞 Шаг 5: Введите телефон (или "пропустить"):\n' +
+                '💡 Например: "+7 999 123-45-67"').catch(console.error);
+
+        } else if (contactData.step === 'enter_phone') {
+            if (text.toLowerCase() !== 'пропустить') {
+                contactData.data.phone = text.trim();
+            }
+            contactData.step = 'enter_telegram';
+
+            bot.sendMessage(chatId,
+                `📞 Телефон: "${text === 'пропустить' ? 'Не указан' : text}"\n\n` +
+                '💬 Шаг 6: Введите Telegram (или "пропустить"):\n' +
+                '💡 Например: "@username" или ссылку').catch(console.error);
+
+        } else if (contactData.step === 'enter_telegram') {
+            if (text.toLowerCase() !== 'пропустить') {
+                contactData.data.telegram = text.trim();
+            }
+            contactData.step = 'enter_notes';
+
+            bot.sendMessage(chatId,
+                `💬 Telegram: "${text === 'пропустить' ? 'Не указан' : text}"\n\n` +
+                '📝 Шаг 7: Введите заметки (или "пропустить"):\n' +
+                '💡 Например: "Ответственный за закупки", "Доступен по вторникам"').catch(console.error);
+
+        } else if (contactData.step === 'enter_notes') {
+            if (text.toLowerCase() !== 'пропустить') {
+                contactData.data.notes = text.trim();
+            }
+
+            // Сохранение контакта
+            db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                if (err || !user) {
+                    bot.sendMessage(chatId, '❌ Ошибка пользователя!').catch(console.error);
+                    return;
+                }
+
+                const { company_name, contact_name, position, email, phone, telegram, notes } = contactData.data;
+
+                db.run(`INSERT INTO company_contacts (company_name, contact_name, position, email, phone, telegram, notes, added_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [company_name, contact_name, position || null, email || null, phone || null, telegram || null, notes || null, user.id],
+                    function(err) {
+                        if (err) {
+                            console.error('❌ Contact creation error:', err);
+                            bot.sendMessage(chatId, '❌ Ошибка сохранения контакта!').catch(console.error);
+                            return;
+                        }
+
+                        delete global.userScreenshots[telegramId];
+
+                        let summaryText = '✅ КОНТАКТ УСПЕШНО ДОБАВЛЕН! 🎉\n\n';
+                        summaryText += `🏢 Компания: ${company_name}\n`;
+                        summaryText += `👤 Имя: ${contact_name}\n`;
+                        if (position) summaryText += `💼 Должность: ${position}\n`;
+                        if (email) summaryText += `✉️ Email: ${email}\n`;
+                        if (phone) summaryText += `📞 Телефон: ${phone}\n`;
+                        if (telegram) summaryText += `💬 Telegram: ${telegram}\n`;
+                        if (notes) summaryText += `📝 Заметки: ${notes}\n`;
+
+                        bot.sendMessage(chatId, summaryText).catch(console.error);
+                    });
+            });
+        }
+    } catch (error) {
+        console.error('❌ Handle contact creation error:', error);
+        delete global.userScreenshots[telegramId];
+    }
+}
+
+function showAllContacts(chatId, telegramId) {
+    try {
+        db.all(`SELECT cc.*, u.role as added_by_role, u.telegram_id as added_by_telegram
+                FROM company_contacts cc
+                LEFT JOIN users u ON cc.added_by = u.id
+                ORDER BY cc.company_name, cc.contact_name`, (err, contacts) => {
+            if (err) {
+                console.error('❌ Show all contacts error:', err);
+                bot.sendMessage(chatId, '❌ Ошибка загрузки контактов!').catch(console.error);
+                return;
+            }
+
+            if (!contacts || contacts.length === 0) {
+                bot.sendMessage(chatId,
+                    '📇 БАЗА КОНТАКТОВ 📋\n\n' +
+                    '❌ Контакты отсутствуют!\n\n' +
+                    '💡 Используйте "➕ Добавить контакт" для создания первого контакта.').catch(console.error);
+                return;
+            }
+
+            let contactsText = `📇 БАЗА КОНТАКТОВ 📋\n\n`;
+            contactsText += `📊 Всего контактов: ${contacts.length}\n\n`;
+
+            let currentCompany = '';
+            contacts.forEach((contact, index) => {
+                if (contact.company_name !== currentCompany) {
+                    currentCompany = contact.company_name;
+                    contactsText += `🏢 ${contact.company_name}\n`;
+                }
+
+                contactsText += `   👤 ${contact.contact_name}`;
+                if (contact.position) contactsText += ` (${contact.position})`;
+                contactsText += `\n`;
+
+                if (contact.email) contactsText += `   ✉️ ${contact.email}\n`;
+                if (contact.phone) contactsText += `   📞 ${contact.phone}\n`;
+                if (contact.telegram) contactsText += `   💬 ${contact.telegram}\n`;
+                if (contact.notes) contactsText += `   📝 ${contact.notes}\n`;
+
+                // Показываем кто добавил
+                contactsText += `   👨‍💼 Добавил: ${contact.added_by_role || 'Unknown'}\n`;
+                contactsText += `   📅 ${new Date(contact.created_date).toLocaleDateString()}\n\n`;
+            });
+
+            // Разбиваем на части если слишком длинное
+            if (contactsText.length > 4000) {
+                const parts = [];
+                let currentPart = `📇 БАЗА КОНТАКТОВ 📋\n\n📊 Всего контактов: ${contacts.length}\n\n`;
+
+                contacts.forEach((contact) => {
+                    let contactInfo = '';
+                    if (contact.company_name !== currentCompany) {
+                        currentCompany = contact.company_name;
+                        contactInfo += `🏢 ${contact.company_name}\n`;
+                    }
+                    contactInfo += `   👤 ${contact.contact_name}`;
+                    if (contact.position) contactInfo += ` (${contact.position})`;
+                    contactInfo += `\n`;
+                    if (contact.email) contactInfo += `   ✉️ ${contact.email}\n`;
+                    if (contact.phone) contactInfo += `   📞 ${contact.phone}\n`;
+                    if (contact.telegram) contactInfo += `   💬 ${contact.telegram}\n`;
+                    if (contact.notes) contactInfo += `   📝 ${contact.notes}\n`;
+                    contactInfo += `   👨‍💼 Добавил: ${contact.added_by_role || 'Unknown'}\n`;
+                    contactInfo += `   📅 ${new Date(contact.created_date).toLocaleDateString()}\n\n`;
+
+                    if (currentPart.length + contactInfo.length > 4000) {
+                        parts.push(currentPart);
+                        currentPart = contactInfo;
+                    } else {
+                        currentPart += contactInfo;
+                    }
+                });
+                if (currentPart) parts.push(currentPart);
+
+                parts.forEach((part, index) => {
+                    setTimeout(() => {
+                        bot.sendMessage(chatId, part + (index < parts.length - 1 ? '\n📄 Продолжение...' : '')).catch(console.error);
+                    }, index * 1000);
+                });
+            } else {
+                bot.sendMessage(chatId, contactsText).catch(console.error);
+            }
+        });
+    } catch (error) {
+        console.error('❌ Show all contacts error:', error);
+    }
+}
+
+// ========== ФУНКЦИИ СТАТУСА СОТРУДНИКОВ ==========
+
+function showEmployeesOnline(chatId, telegramId) {
+    try {
+        // Обновляем последнюю активность текущего пользователя
+        updateUserActivity(telegramId);
+
+        db.all(`SELECT
+                    full_name,
+                    role,
+                    status,
+                    status_message,
+                    last_activity,
+                    CASE
+                        WHEN datetime('now', '-5 minutes') < last_activity AND status != 'offline' THEN 'online'
+                        WHEN status = 'away' THEN 'away'
+                        WHEN status = 'busy' THEN 'busy'
+                        ELSE 'offline'
+                    END as actual_status
+                FROM users
+                WHERE is_registered = 1
+                ORDER BY actual_status DESC, full_name`, (err, users) => {
+            if (err) {
+                console.error('❌ Show employees online error:', err);
+                bot.sendMessage(chatId, '❌ Ошибка загрузки сотрудников!').catch(console.error);
+                return;
+            }
+
+            if (!users || users.length === 0) {
+                bot.sendMessage(chatId,
+                    '👥 СОТРУДНИКИ ОНЛАЙН 📊\n\n' +
+                    '❌ Сотрудники не найдены!').catch(console.error);
+                return;
+            }
+
+            let statusText = '👥 СОТРУДНИКИ ОНЛАЙН 📊\n\n';
+
+            const statusGroups = {
+                online: [],
+                away: [],
+                busy: [],
+                offline: []
+            };
+
+            // Группируем по статусам
+            users.forEach(user => {
+                statusGroups[user.actual_status].push(user);
+            });
+
+            // Показываем онлайн
+            if (statusGroups.online.length > 0) {
+                statusText += `🟢 ОНЛАЙН (${statusGroups.online.length})\n`;
+                statusGroups.online.forEach(user => {
+                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
+                });
+                statusText += '\n';
+            }
+
+            // Показываем не на месте
+            if (statusGroups.away.length > 0) {
+                statusText += `🟡 НЕ НА МЕСТЕ (${statusGroups.away.length})\n`;
+                statusGroups.away.forEach(user => {
+                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
+                });
+                statusText += '\n';
+            }
+
+            // Показываем занятых
+            if (statusGroups.busy.length > 0) {
+                statusText += `🔴 НЕ БЕСПОКОИТЬ (${statusGroups.busy.length})\n`;
+                statusGroups.busy.forEach(user => {
+                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
+                });
+                statusText += '\n';
+            }
+
+            // Показываем оффлайн
+            if (statusGroups.offline.length > 0) {
+                statusText += `⚫ ОФФЛАЙН (${statusGroups.offline.length})\n`;
+                statusGroups.offline.forEach(user => {
+                    const lastActivity = new Date(user.last_activity);
+                    const timeAgo = getTimeAgo(lastActivity);
+                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    statusText += `      ⏰ ${timeAgo}\n`;
+                });
+                statusText += '\n';
+            }
+
+            statusText += '⚡ Измените свой статус через "⚡ Мой статус"';
+
+            bot.sendMessage(chatId, statusText).catch(console.error);
+        });
+    } catch (error) {
+        console.error('❌ Show employees online error:', error);
+    }
+}
+
+function showStatusMenu(chatId, telegramId) {
+    const statusKeyboard = {
+        reply_markup: {
+            keyboard: [
+                ['🟢 Онлайн', '🟡 Не на месте'],
+                ['🔴 Не беспокоить', '⚫ Оффлайн'],
+                ['✏️ Изменить сообщение', '📊 Мой текущий статус'],
+                ['🔙 Назад в меню']
+            ],
+            resize_keyboard: true
+        }
+    };
+
+    db.get("SELECT status, status_message FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка получения статуса!').catch(console.error);
+            return;
+        }
+
+        const currentStatus = getStatusEmoji(user.status || 'offline');
+        const statusMessage = user.status_message ? `\n💬 Сообщение: "${user.status_message}"` : '';
+
+        bot.sendMessage(chatId,
+            '⚡ УПРАВЛЕНИЕ СТАТУСОМ 📊\n\n' +
+            `📍 Текущий статус: ${currentStatus}${statusMessage}\n\n` +
+            '🟢 Онлайн - доступен для связи\n' +
+            '🟡 Не на месте - отошел ненадолго\n' +
+            '🔴 Не беспокоить - занят работой\n' +
+            '⚫ Оффлайн - недоступен\n\n' +
+            '👇 Выберите новый статус:', statusKeyboard).catch(console.error);
+    });
+}
+
+function changeUserStatus(chatId, telegramId, newStatus) {
+    const statusNames = {
+        'online': 'Онлайн',
+        'away': 'Не на месте',
+        'busy': 'Не беспокоить',
+        'offline': 'Оффлайн'
+    };
+
+    db.run("UPDATE users SET status = ?, last_activity = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+        [newStatus, telegramId], (err) => {
+        if (err) {
+            console.error('❌ Change status error:', err);
+            bot.sendMessage(chatId, '❌ Ошибка изменения статуса!').catch(console.error);
+            return;
+        }
+
+        const statusEmoji = getStatusEmoji(newStatus);
+        bot.sendMessage(chatId,
+            `✅ Статус изменен!\n\n` +
+            `📍 Новый статус: ${statusEmoji}\n\n` +
+            `💡 Коллеги теперь видят ваш статус в разделе "👥 Сотрудники онлайн"`).catch(console.error);
+    });
+}
+
+function startStatusMessage(chatId, telegramId) {
+    global.userScreenshots[telegramId] = {
+        type: 'status_message',
+        step: 'enter_message'
+    };
+
+    bot.sendMessage(chatId,
+        '✏️ СООБЩЕНИЕ СТАТУСА 💬\n\n' +
+        '📝 Введите сообщение для вашего статуса:\n' +
+        '💡 Например: "На встрече до 15:00", "Обед", "В командировке"\n' +
+        '⚡ Или напишите "убрать" чтобы удалить сообщение').catch(console.error);
+}
+
+function handleStatusMessage(chatId, telegramId, text) {
+    try {
+        const message = text.trim();
+        let statusMessage = null;
+
+        if (message.toLowerCase() !== 'убрать') {
+            statusMessage = message;
+        }
+
+        db.run("UPDATE users SET status_message = ? WHERE telegram_id = ?",
+            [statusMessage, telegramId], (err) => {
+            if (err) {
+                console.error('❌ Update status message error:', err);
+                bot.sendMessage(chatId, '❌ Ошибка сохранения сообщения!').catch(console.error);
+                return;
+            }
+
+            delete global.userScreenshots[telegramId];
+
+            if (statusMessage) {
+                bot.sendMessage(chatId,
+                    `✅ Сообщение статуса обновлено!\n\n` +
+                    `💬 Новое сообщение: "${statusMessage}"\n\n` +
+                    `👥 Коллеги увидят это сообщение рядом с вашим статусом`).catch(console.error);
+            } else {
+                bot.sendMessage(chatId,
+                    `✅ Сообщение статуса удалено!\n\n` +
+                    `📍 Теперь отображается только ваш статус без дополнительного сообщения`).catch(console.error);
+            }
+        });
+    } catch (error) {
+        console.error('❌ Handle status message error:', error);
+        delete global.userScreenshots[telegramId];
+    }
+}
+
+function updateUserActivity(telegramId) {
+    db.run("UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE telegram_id = ?", [telegramId], (err) => {
+        if (err) {
+            console.error('❌ Update activity error:', err);
+        }
+    });
+}
+
+function getStatusEmoji(status) {
+    switch(status) {
+        case 'online': return '🟢 Онлайн';
+        case 'away': return '🟡 Не на месте';
+        case 'busy': return '🔴 Не беспокоить';
+        case 'offline': return '⚫ Оффлайн';
+        default: return '⚫ Оффлайн';
+    }
+}
+
+function getTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMins < 1) return 'только что';
+    if (diffMins < 60) return `${diffMins} мин назад`;
+    if (diffHours < 24) return `${diffHours} ч назад`;
+    if (diffDays < 7) return `${diffDays} дн назад`;
+    return date.toLocaleDateString();
+}
+
+function showCurrentStatus(chatId, telegramId) {
+    db.get("SELECT status, status_message, last_activity FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка получения статуса!').catch(console.error);
+            return;
+        }
+
+        const currentStatus = getStatusEmoji(user.status || 'offline');
+        const statusMessage = user.status_message ? `\n💬 Сообщение: "${user.status_message}"` : '';
+        const lastActivity = new Date(user.last_activity);
+        const timeAgo = getTimeAgo(lastActivity);
+
+        bot.sendMessage(chatId,
+            `📊 ВАШ ТЕКУЩИЙ СТАТУС 📍\n\n` +
+            `📍 Статус: ${currentStatus}${statusMessage}\n` +
+            `⏰ Последняя активность: ${timeAgo}\n\n` +
+            `💡 Коллеги видят ваш статус в разделе "👥 Сотрудники онлайн"\n` +
+            `⚡ Для изменения используйте кнопки выше`).catch(console.error);
+    });
+}
 
 // PDF Generation Function
 function generateInvoicePDF(data, filePath) {
