@@ -599,7 +599,20 @@ bot.on('message', (msg) => {
 
         // [DEBUG LOG] Log incoming message and current state
         const currentState = global.userScreenshots[telegramId];
+<<<<<<< HEAD
+        const currentTime = new Date().toLocaleString('ru-RU');
+
+        db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+            const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
+            console.log(`\n🔔 [${currentTime}] USER ACTION:`);
+            console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
+            console.log(`💬 Message: "${text}"`);
+            console.log(`📍 State: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
+            console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        });
+=======
         console.log(`[MESSAGE DEBUG] User ${telegramId} sent: "${text}" | Current state: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
+>>>>>>> 5a7301b4fdc8407e174d9c5397b695b0319c0d8d
 
         // Автоматическое обновление активности пользователя
         updateUserActivity(telegramId);

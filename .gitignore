@@ -28,4 +28,4 @@ Thumbs.db
 
 # Временные файлы
 tmp/
-temp/
+temp/node_modules/
