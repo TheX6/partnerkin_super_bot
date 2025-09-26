@@ -1,0 +1,136 @@
+<!-- public/clicker.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Партнеркино: Тапалка</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+            color: white;
+            text-align: center;
+            padding: 20px;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 20px;
+        }
+        #stats {
+            font-size: 20px;
+            margin: 20px 0;
+        }
+        #clickBtn {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            background: #ffcc00;
+            border: none;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+            transition: transform 0.1s;
+        }
+        #clickBtn:active {
+            transform: scale(0.95);
+        }
+        #status {
+            margin-top: 20px;
+            font-size: 18px;
+            min-height: 24px;
+        }
+        .energy-bar {
+            width: 80%;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            margin: 10px auto;
+            overflow: hidden;
+        }
+        .energy-fill {
+            height: 100%;
+            background: #4caf50;
+            width: 100%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💥 ТАПАЙ и зарабатывай П-коины!</h1>
+        <div id="stats">
+            💰 Коины: <span id="coins">0</span><br>
+            ⚡ Энергия: <span id="energy">100</span>%
+        </div>
+        <div class="energy-bar">
+            <div class="energy-fill" id="energyBar"></div>
+        </div>
+        <button id="clickBtn">🖱️ ТАП!</button>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.ready();
+
+        const initData = tg.initDataUnsafe;
+        if (!initData.user) {
+            document.body.innerHTML = '<h2>❌ Запускай только из Telegram!</h2>';
+            throw new Error('Not in Telegram');
+        }
+
+        const userId = initData.user.id;
+        let energy = 100;
+        let coins = 0;
+
+        function updateUI() {
+            document.getElementById('coins').textContent = coins;
+            document.getElementById('energy').textContent = energy;
+            document.getElementById('energyBar').style.width = energy + '%';
+            document.getElementById('clickBtn').disabled = energy <= 0;
+        }
+
+        async function click() {
+            if (energy <= 0) return;
+
+            const res = await fetch('/api/click', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId })
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                energy = data.energy;
+                coins += data.coins;
+                document.getElementById('status').textContent = `+${data.coins} 💰`;
+                setTimeout(() => document.getElementById('status').textContent = '', 1000);
+            } else {
+                document.getElementById('status').textContent = '❌ ' + data.error;
+            }
+
+            updateUI();
+        }
+
+        // Загрузка баланса (упрощённо — можно добавить GET-запрос позже)
+        // Пока просто стартуем с 100 энергии и 0 коинов (UI обновится после первого тапа)
+
+        document.getElementById('clickBtn').addEventListener('click', click);
+        updateUI();
+    </script>
+</body>
+</html>

@@ -6,13 +6,21 @@ module.exports = {
 
     // Настройки базы данных
     DATABASE: {
-        name: 'partnerkino.db',
-        backup_interval: 24 * 60 * 60 * 1000 // 24 часа в миллисекундах
+        type: process.env.DB_TYPE || 'sqlite', // 'sqlite' или 'postgresql'
+        name: process.env.DB_FILENAME || 'partnerkino.db',
+        backup_interval: 24 * 60 * 60 * 1000, // 24 часа в миллисекундах
+        postgres: {
+            host: process.env.DB_HOST || 'localhost',
+            port: process.env.DB_PORT || 5432,
+            database: process.env.DB_NAME || 'partnerkino',
+            user: process.env.DB_USER || 'postgres',
+            password: process.env.DB_PASSWORD || 'password'
+        }
     },
 
     // Настройки админа
     ADMIN: {
-        password: 'partnerkin1212', // Пароль для входа в админку
+        password: process.env.ADMIN_PASSWORD || 'partnerkin1212', // Пароль для входа в админку
         max_admins: 5 // Максимальное количество админов
     },
 

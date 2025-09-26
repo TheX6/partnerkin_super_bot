@@ -1,10 +1,11 @@
 // app.js - Бот "Жизнь в Партнеркино" - УЛУЧШЕННАЯ ВЕРСИЯ 🚀
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const sqlite3 = require('sqlite3').verbose();
 const config = require('./config');
+const db = require('./database');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
+const { createCanvas, loadImage } = require('canvas');
 
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
@@ -24,281 +25,9 @@ global.userScreenshots = {};
 global.waitingForPoints = {};
 global.adminStates = {};
 global.userMenuContext = {};
+global.vacationStates = {};
 
-// База данных
-const db = new sqlite3.Database(config.DATABASE.name);
-
-// Создание таблиц
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        telegram_id INTEGER UNIQUE,
-        username TEXT,
-        full_name TEXT,
-        role TEXT DEFAULT 'новичок',
-        p_coins INTEGER DEFAULT 0,
-        energy INTEGER DEFAULT 100,
-        registration_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        contacts TEXT,
-        is_registered INTEGER DEFAULT 0
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS intern_progress (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        test_name TEXT,
-        completed INTEGER DEFAULT 0,
-        points_earned INTEGER DEFAULT 0,
-        completed_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS test_submissions (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        telegram_id INTEGER,
-        username TEXT,
-        test_name TEXT,
-        points_claimed INTEGER,
-        photo_file_id TEXT,
-        status TEXT DEFAULT 'pending',
-        submitted_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        admin_id INTEGER,
-        reviewed_date DATETIME,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS admins (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        telegram_id INTEGER,
-        granted_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS battles (
-        id INTEGER PRIMARY KEY,
-        attacker_id INTEGER,
-        defender_id INTEGER,
-        winner_id INTEGER,
-        points_won INTEGER,
-        battle_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(attacker_id) REFERENCES users(id),
-        FOREIGN KEY(defender_id) REFERENCES users(id)
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS purchases (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        item_name TEXT,
-        price INTEGER,
-        purchase_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-    
-    // Тайм-слоты для мероприятий
-    db.run(`CREATE TABLE IF NOT EXISTS event_slots (
-        id INTEGER PRIMARY KEY,
-        event_name TEXT,
-        category TEXT,
-        date TEXT,
-        time TEXT,
-        location TEXT,
-        max_participants INTEGER DEFAULT 10,
-        current_participants INTEGER DEFAULT 0,
-        points_reward INTEGER DEFAULT 5,
-        status TEXT DEFAULT 'active',
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    
-    // Записи на мероприятия
-    db.run(`CREATE TABLE IF NOT EXISTS event_bookings (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        slot_id INTEGER,
-        booking_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id),
-        FOREIGN KEY(slot_id) REFERENCES event_slots(id)
-    )`);
-
-    // Подарки П-коинов
-    db.run(`CREATE TABLE IF NOT EXISTS gifts (
-        id INTEGER PRIMARY KEY,
-        sender_id INTEGER,
-        receiver_id INTEGER,
-        amount INTEGER,
-        message TEXT,
-        gift_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(sender_id) REFERENCES users(id),
-        FOREIGN KEY(receiver_id) REFERENCES users(id)
-    )`);
-
-    // Система задач
-    db.run(`CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY,
-        creator_id INTEGER,
-        assignee_id INTEGER,
-        title TEXT NOT NULL,
-        description TEXT,
-        status TEXT DEFAULT 'pending',
-        priority TEXT DEFAULT 'medium',
-        reward_coins INTEGER DEFAULT 0,
-        due_date DATETIME,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        completed_date DATETIME,
-        cancelled_reason TEXT,
-        postponed_until DATETIME,
-        last_action_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(creator_id) REFERENCES users(id),
-        FOREIGN KEY(assignee_id) REFERENCES users(id)
-    )`);
-
-    // Инвойсы для продажников
-    db.run(`CREATE TABLE IF NOT EXISTS invoices (
-        id INTEGER PRIMARY KEY,
-        creator_id INTEGER,
-        company_name TEXT NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        start_date DATE NOT NULL,
-        end_date DATE NOT NULL,
-        quantity INTEGER DEFAULT 1,
-        description TEXT,
-        file_path TEXT,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(creator_id) REFERENCES users(id)
-    )`);
-
-    // Контакты компаний
-    db.run(`CREATE TABLE IF NOT EXISTS company_contacts (
-        id INTEGER PRIMARY KEY,
-        company_name TEXT NOT NULL,
-        contact_name TEXT NOT NULL,
-        position TEXT,
-        email TEXT,
-        phone TEXT,
-        telegram TEXT,
-        notes TEXT,
-        added_by INTEGER,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(added_by) REFERENCES users(id)
-    )`);
-
-    // Helper function to check if column exists
-    function columnExists(table, column, callback) {
-        db.all(`PRAGMA table_info(${table})`, (err, rows) => {
-            if (err) {
-                callback(false);
-                return;
-            }
-            const exists = rows.some(row => row.name === column);
-            callback(exists);
-        });
-    }
-
-    // Safe ALTERs for new fields
-    columnExists('invoices', 'work_type', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE invoices ADD COLUMN work_type TEXT", (err) => {
-                if (err) console.log("ALTER work_type error:", err.message);
-            });
-        }
-    });
-    columnExists('invoices', 'org_address', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE invoices ADD COLUMN org_address TEXT", (err) => {
-                if (err) console.log("ALTER org_address error:", err.message);
-            });
-        }
-    });
-    columnExists('invoices', 'invoice_number', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE invoices ADD COLUMN invoice_number INTEGER", (err) => {
-                if (err) console.log("ALTER invoice_number error:", err.message);
-            });
-        }
-    });
-    columnExists('invoices', 'invoice_date', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE invoices ADD COLUMN invoice_date DATE DEFAULT CURRENT_DATE", (err) => {
-                if (err) console.log("ALTER invoice_date error:", err.message);
-            });
-        }
-    });
-
-    // Добавляем поля для статуса сотрудников
-    columnExists('users', 'status', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'offline'", (err) => {
-                if (err) console.log("ALTER status error:", err.message);
-            });
-        }
-    });
-    columnExists('users', 'status_message', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE users ADD COLUMN status_message TEXT", (err) => {
-                if (err) console.log("ALTER status_message error:", err.message);
-            });
-        }
-    });
-    columnExists('users', 'last_activity', (exists) => {
-        if (!exists) {
-            db.run("ALTER TABLE users ADD COLUMN last_activity DATETIME", (err) => {
-                if (err) {
-                    console.log("ALTER last_activity error:", err.message);
-                } else {
-                    // Устанавливаем текущее время для всех существующих пользователей
-                    db.run("UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE last_activity IS NULL");
-                }
-            });
-        }
-    });
-
-    // Комментарии к задачам
-    db.run(`CREATE TABLE IF NOT EXISTS task_comments (
-        id INTEGER PRIMARY KEY,
-        task_id INTEGER,
-        user_id INTEGER,
-        comment TEXT NOT NULL,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(task_id) REFERENCES tasks(id),
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-
-    // Система "Похвастаться"
-    db.run(`CREATE TABLE IF NOT EXISTS achievements (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        title TEXT NOT NULL,
-        description TEXT,
-        photo_file_id TEXT,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-
-    // Лайки к достижениям
-    db.run(`CREATE TABLE IF NOT EXISTS achievement_likes (
-        id INTEGER PRIMARY KEY,
-        achievement_id INTEGER,
-        user_id INTEGER,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(achievement_id) REFERENCES achievements(id),
-        FOREIGN KEY(user_id) REFERENCES users(id),
-        UNIQUE(achievement_id, user_id)
-    )`);
-
-    // Комментарии к достижениям
-    db.run(`CREATE TABLE IF NOT EXISTS achievement_comments (
-        id INTEGER PRIMARY KEY,
-        achievement_id INTEGER,
-        user_id INTEGER,
-        comment TEXT NOT NULL,
-        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(achievement_id) REFERENCES achievements(id),
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-
-    console.log('🚀 База данных готова к работе!');
-});
+console.log('🚀 Подключение к базе данных установлено!');
 
 // ========== КЛАВИАТУРЫ ==========
 
@@ -313,7 +42,7 @@ const startKeyboard = {
 const internMenuKeyboard = {
     reply_markup: {
         keyboard: [
-            ['📚 Пройти тестирование'],
+            ['🎓 Пройти курсы'],
             ['💰 Мой баланс', '📊 Мой прогресс'],
             ['🔄 Главное меню']
         ],
@@ -337,6 +66,7 @@ const personalKeyboard = {
     reply_markup: {
         keyboard: [
             ['💰 Мой баланс', '🏆 Рейтинг'],
+            ['🏖️ Отпуски'],
             ['🔙 В главное меню']
         ],
         resize_keyboard: true
@@ -370,7 +100,7 @@ const funKeyboard = {
         keyboard: [
             ['⚔️ PVP Сражения', '🛒 Магазин'],
             ['🎁 Подарить баллы', '🎉 Похвастаться'],
-            ['🔙 В главное меню']
+            ['🔙 В главное меню'],  ['🖱️ Тапалка'],
         ],
         resize_keyboard: true
     }
@@ -459,7 +189,30 @@ const adminUsersKeyboard = {
     reply_markup: {
         keyboard: [
             ['👥 Пользователи', '📋 Заявки на проверку'],
+            ['🏖️ Управление отпусками'],
             ['🔙 В админку']
+        ],
+        resize_keyboard: true
+    }
+};
+// Клавиатуры для системы отпусков
+const vacationKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📝 Подать заявку', '📋 Мои заявки'],
+            ['📊 Остаток дней'],
+            ['🔙 В личное меню']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const adminVacationKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📋 Заявки на отпуск', '📅 Календарь команды'],
+            ['👥 Балансы сотрудников', '📊 Статистика отпусков'],
+            ['🔙 В управление пользователями']
         ],
         resize_keyboard: true
     }
@@ -560,6 +313,18 @@ const eventCategoryKeyboard = {
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id;
+        const username = msg.from.username || 'user';
+
+    // [START LOG] Логирование команды /start
+    const currentTime = new Date().toLocaleString('ru-RU');
+    db.get("SELECT full_name, role, is_registered FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
+        const status = user && user.is_registered ? 'returning user' : 'new user';
+        console.log(`\n🚀 [${currentTime}] START COMMAND:`);
+        console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
+        console.log(`🏷️ Status: ${status}`);
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    });
 
     // [DEBUG LOG] Clear any active state on /start
     if (global.userScreenshots[telegramId]) {
@@ -597,9 +362,8 @@ bot.on('message', (msg) => {
         const telegramId = msg.from.id;
         const username = msg.from.username || 'user';
 
-        // [DEBUG LOG] Log incoming message and current state
+                // [USER ACTION LOG] Подробное логирование действий пользователя
         const currentState = global.userScreenshots[telegramId];
-<<<<<<< HEAD
         const currentTime = new Date().toLocaleString('ru-RU');
 
         db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
@@ -610,9 +374,6 @@ bot.on('message', (msg) => {
             console.log(`📍 State: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
             console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         });
-=======
-        console.log(`[MESSAGE DEBUG] User ${telegramId} sent: "${text}" | Current state: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
->>>>>>> 5a7301b4fdc8407e174d9c5397b695b0319c0d8d
 
         // Автоматическое обновление активности пользователя
         updateUserActivity(telegramId);
@@ -630,6 +391,46 @@ bot.on('message', (msg) => {
             return;
         }
 
+        if (text === '/clicker') {
+            const miniAppUrl = 'https://partnerkino-clicker.onrender.com';
+            bot.sendMessage(chatId, '🎮 Запускаю тапалку!', {
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: '💥 Открыть тапалку', web_app: { url: miniAppUrl } }
+                    ]]
+                }
+            });
+            return;
+        }
+
+        // Test certificate generation for admins
+        if (text === '/test_cert') {
+            db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+                if (!admin) {
+                    bot.sendMessage(chatId, '❌ Доступ запрещен! Только для администраторов.').catch(console.error);
+                    return;
+                }
+                const userName = "Тестовый Пользователь";
+                const courseName = "Тестовый Курс";
+                const completionDate = new Date().toLocaleDateString('ru-RU');
+                generateCertificate(userName, courseName, completionDate).then(certificateBuffer => {
+                    bot.sendPhoto(chatId, certificateBuffer, {
+                        caption: `🎉 Тестовый сертификат!\n\n👤 ${userName}\n📚 ${courseName}\n📅 ${completionDate}`
+                    }).catch(console.error);
+                }).catch(error => {
+                    console.error('❌ Test certificate generation error:', error);
+                    bot.sendMessage(chatId, '❌ Ошибка генерации тестового сертификата!').catch(console.error);
+                });
+            });
+            return;
+        }
+
+        // Reset stats command for admins
+        if (text === '/reset_stats') {
+            handleResetStats(chatId, telegramId);
+            return;
+        }
+
         if (text && text.startsWith('/')) return;
         
         // Обработка фото для рассылки (если админ в режиме broadcast и ожидает медиа)
@@ -643,6 +444,15 @@ bot.on('message', (msg) => {
 
         // Обработка скриншотов
         if (msg.photo) {
+                        // [PHOTO LOG] Логирование отправки фото
+            const currentTime = new Date().toLocaleString('ru-RU');
+            db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
+                console.log(`\n📸 [${currentTime}] PHOTO UPLOADED:`);
+                console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
+                console.log(`🏷️ Context: ${currentState ? currentState.type : 'none'}`);
+                console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            });
             handleScreenshot(chatId, telegramId, msg.photo[msg.photo.length - 1].file_id, username);
             return;
         }
@@ -914,16 +724,33 @@ function showEventDetails(chatId, telegramId, event) {
             showAdminUsersMenu(chatId);
         } else if (text === '📊 Статистика') {
             showAdminStats(chatId, telegramId);
+        } else if (text === '🏖️ Управление отпусками') {
+            showAdminVacationMenu(chatId, telegramId);
+        } else if (text === '📋 Заявки на отпуск') {
+            showAdminVacationRequests(chatId, telegramId);
+        } else if (text === '📅 Календарь команды') {
+            showTeamVacationCalendar(chatId, telegramId);
+        } else if (text === '👥 Балансы сотрудников') {
+            showEmployeeBalances(chatId, telegramId);
+        } else if (text === '📊 Статистика отпусков') {
+            showVacationStats(chatId, telegramId);
+        } else if (text === '🔙 В управление пользователями') {
+            showAdminUsersMenu(chatId);
         } else if (text === '🔙 В админку') {
             backToAdminMenu(chatId, telegramId);
+        } else if (text === '🔙 В личное меню') {
+            showPersonalMenu(chatId);
         }
         
         // ========== ОСНОВНОЕ МЕНЮ ==========
         if (text === '💰 Мой баланс') {
             showBalance(chatId, telegramId);
         }
-        if (text === '📚 Пройти тестирование') {
-            showTestMenu(chatId);
+        if (text === '🏖️ Отпуски') {
+            showVacationMenu(chatId, telegramId);
+        }
+        if (text === '🎓 Пройти курсы') {
+            showCoursesMenu(chatId);
         }
         if (text === '📊 Мой прогресс') {
             showInternProgress(chatId, telegramId);
@@ -976,6 +803,30 @@ function showEventDetails(chatId, telegramId, event) {
         }
         if (text === '🏆 Рейтинг') {
             showRating(chatId, telegramId);
+        }
+        if (text === '🖱️ Тапалка') {
+            const miniAppUrl = 'https://partnerkino-clicker.onrender.com';
+            bot.sendMessage(chatId, '🎮 Запускаю тапалку!', {
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: '💥 Открыть тапалку', web_app: { url: miniAppUrl } } // ← ПРАВИЛЬНО!
+                    ]]
+                }
+            });
+            return;
+        }
+        // ========== СИСТЕМА ОТПУСКОВ ==========
+        if (text === '📝 Подать заявку') {
+            startVacationRequest(chatId, telegramId);
+            return;
+        }
+        if (text === '📋 Мои заявки') {
+            showUserVacationRequests(chatId, telegramId);
+            return;
+        }
+        if (text === '📊 Остаток дней') {
+            showVacationMenu(chatId, telegramId);
+            return;
         }
         if (text === '🎉 Похвастаться') {
             startAchievementCreation(chatId, telegramId);
@@ -1160,6 +1011,13 @@ function registerUser(chatId, telegramId, username, role) {
         db.run(`INSERT OR REPLACE INTO users (telegram_id, username, role, p_coins, energy, is_registered) 
                 VALUES (?, ?, ?, ?, 100, 0)`, 
                [telegramId, username, role, initialCoins], () => {
+
+            // Устанавливаем состояние ожидания данных пользователя
+            global.userScreenshots[telegramId] = {
+                type: 'registration',
+                step: 'waiting_for_data',
+                role: role
+            };
             
             const message = role === 'стажер' ? 
                 '🎉 Добро пожаловать в команду, стажер! 👋\n\n' +
@@ -1201,6 +1059,41 @@ function handleTextInput(chatId, telegramId, text, username) {
     }
     
     try {
+        // Vacation request handling
+        if (handleVacationInput(chatId, telegramId, text)) {
+            return;
+        }
+
+        // HR vacation management commands
+        if (handleVacationAdminCommands(chatId, telegramId, text)) {
+            return;
+        }
+
+        // Registration state
+        if (currentState && currentState.type === 'registration') {
+            if (currentState.step === 'waiting_for_data') {
+                // Завершаем регистрацию с введенными данными
+                db.run("UPDATE users SET full_name = ?, contacts = ?, is_registered = 1 WHERE telegram_id = ?",
+                       [text, text, telegramId], () => {
+
+                    const message = currentState.role === 'стажер' ?
+                        '🎊 Регистрация завершена! 🎉\n\n' +
+                        '📚 Теперь проходи тесты и зарабатывай баллы! 💪\n' +
+                        '🔥 Удачи, стажер!' :
+                        '🎊 Регистрация завершена! 🎉\n\n' +
+                        '💰 Получено 50 стартовых П-коинов!\n' +
+                        '🚀 Добро пожаловать в игру!';
+
+                    const keyboard = currentState.role === 'стажер' ? internMenuKeyboard : mainMenuKeyboard;
+                    bot.sendMessage(chatId, message, keyboard).catch(console.error);
+
+                    // Очищаем состояние регистрации
+                    delete global.userScreenshots[telegramId];
+                });
+            }
+            return;
+        }
+
         // Invoice creation state
         if (currentState && currentState.type === 'invoice_creation') {
             const state = currentState;
@@ -1451,9 +1344,9 @@ function showMainMenu(chatId, user) {
                     console.error('[MENU DEBUG] Intern progress query error:', err);
                     return;
                 }
-                console.log(`[MENU DEBUG] Intern progress fetched: ${progress ? progress.completed : 0} completed tests`);
+                console.log(`[MENU DEBUG] Intern progress fetched: ${progress ? progress.completed : 0} completed courses`);
 
-                if (progress && progress.completed >= 3) {
+                if (progress && progress.completed >= 4) {
                     console.log(`[MENU DEBUG] Sending completed intern menu message`);
                     bot.sendMessage(chatId,
                         '🎉 Поздравляю! Стажировка завершена! 🏆\n\n' +
@@ -1467,8 +1360,8 @@ function showMainMenu(chatId, user) {
                     bot.sendMessage(chatId,
                         '👋 Привет, стажер! 📚\n\n' +
                         `💰 Баланс: ${user.p_coins} П-коинов\n` +
-                        '🎯 Продолжай проходить тесты!\n' +
-                        '💪 Каждый тест приближает к цели!', internMenuKeyboard).catch((sendErr) => {
+                        '🎯 Продолжай проходить курсы!\n' +
+                        '💪 Каждый курс приближает к цели!', internMenuKeyboard).catch((sendErr) => {
                             console.error('[MENU DEBUG] Failed to send active intern message:', sendErr);
                         });
                 }
@@ -1747,40 +1640,41 @@ function showInternProgress(chatId, telegramId) {
     try {
         db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
-            
-            db.all(`SELECT * FROM intern_progress WHERE user_id = ? ORDER BY completed_date DESC`, 
-                   [user.id], (err, tests) => {
-                
-                const allTests = [
-                    { name: 'Знакомство с компанией', reward: 10, emoji: '🌟' },
-                    { name: 'Основы работы', reward: 15, emoji: '📈' },
-                    { name: 'Продуктовая линейка', reward: 15, emoji: '🎯' }
+
+            db.all(`SELECT * FROM intern_progress WHERE user_id = ? ORDER BY completed_date DESC`,
+                   [user.id], (err, courses) => {
+
+                const allCourses = [
+                    { name: 'Основы аналитики', reward: 30, emoji: '📊' },
+                    { name: 'Менеджмент проектов', reward: 40, emoji: '💼' },
+                    { name: 'Маркетинг и реклама', reward: 35, emoji: '🎯' },
+                    { name: 'SEO оптимизация', reward: 25, emoji: '🔍' }
                 ];
-                
-                let progressText = '📊 ПРОГРЕСС ОБУЧЕНИЯ 🎓\n\n';
+
+                let progressText = '📊 ПРОГРЕСС КУРСОВ 🎓\n\n';
                 let completed = 0;
                 let totalEarned = 0;
-                
-                allTests.forEach(testInfo => {
-                    const test = tests.find(t => t.test_name === testInfo.name && t.completed === 1);
-                    if (test) {
-                        progressText += `✅ ${testInfo.emoji} ${testInfo.name} - ${test.points_earned} баллов\n`;
+
+                allCourses.forEach(courseInfo => {
+                    const course = courses.find(c => c.test_name === courseInfo.name && c.completed === 1);
+                    if (course) {
+                        progressText += `✅ ${courseInfo.emoji} ${courseInfo.name} - ${course.points_earned} П-коинов\n`;
                         completed++;
-                        totalEarned += test.points_earned;
+                        totalEarned += course.points_earned;
                     } else {
-                        progressText += `⏳ ${testInfo.emoji} ${testInfo.name} - ${testInfo.reward} баллов\n`;
+                        progressText += `⏳ ${courseInfo.emoji} ${courseInfo.name} - ${courseInfo.reward} П-коинов\n`;
                     }
                 });
-                
-                progressText += `\n📈 Завершено: ${completed}/3\n`;
+
+                progressText += `\n📈 Завершено: ${completed}/4\n`;
                 progressText += `💰 Заработано: ${totalEarned} П-коинов\n`;
-                
-                if (completed >= 3) {
-                    progressText += '\n🎉 ОБУЧЕНИЕ ЗАВЕРШЕНО! 🏆\n🚀 Ты молодец!';
+
+                if (completed >= 4) {
+                    progressText += '\n🎉 КУРСЫ ЗАВЕРШЕНЫ! 🏆\n🚀 Ты молодец!';
                 } else {
                     progressText += '\n💪 Продолжай! Ты на верном пути!';
                 }
-                
+
                 bot.sendMessage(chatId, progressText).catch(console.error);
             });
         });
@@ -3650,6 +3544,17 @@ bot.on('callback_query', (callbackQuery) => {
         const chatId = callbackQuery.message.chat.id;
         const messageId = callbackQuery.message.message_id;
         const telegramId = callbackQuery.from.id;
+        const username = callbackQuery.from.username || 'user';
+
+        // [CALLBACK LOG] Логирование inline кнопок
+        const currentTime = new Date().toLocaleString('ru-RU');
+        db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+            const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
+            console.log(`\n🖱️ [${currentTime}] CALLBACK ACTION:`);
+            console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
+            console.log(`🔘 Button: "${data}"`);
+            console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        });
         
         if (data === 'confirm_invoice') {
             console.log(`[INVOICE DEBUG] Confirm invoice callback for user ${telegramId}, state: ${JSON.stringify(global.userScreenshots[telegramId])}`);
@@ -3710,6 +3615,11 @@ bot.on('callback_query', (callbackQuery) => {
         } else if (data.startsWith('reject_')) {
             const submissionId = data.split('_')[1];
             rejectSubmission(chatId, messageId, telegramId, submissionId, callbackQuery.id);
+        } else if (data === 'confirm_reset_stats') {
+            confirmResetStats(query.message.chat.id, query.from.id, query.id, query.message.message_id);
+        } else if (data === 'cancel_reset_stats') {
+            bot.answerCallbackQuery(query.id, {text: '❌ Сброс статистики отменен.'});
+            bot.editMessageText('❌ Сброс статистики отменен.', {chat_id: query.message.chat.id, message_id: query.message.message_id});
         }
     } catch (error) {
         console.error('❌ Callback query error:', error);
@@ -3740,11 +3650,32 @@ function approveSubmission(chatId, messageId, adminTelegramId, submissionId, cal
                            [submission.points_claimed, submission.telegram_id], () => {
                         
                         // Записываем прогресс стажера
-                        db.run(`INSERT OR REPLACE INTO intern_progress 
-                                (user_id, test_name, completed, points_earned, completed_date) 
-                                VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)`, 
+                        db.run(`INSERT OR REPLACE INTO intern_progress
+                                (user_id, test_name, completed, points_earned, completed_date)
+                                VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)`,
                                [submission.user_id, submission.test_name, submission.points_claimed]);
-                        
+
+                        // Проверяем, завершил ли пользователь все курсы для генерации сертификата
+                        db.get(`SELECT COUNT(*) as completed_courses FROM intern_progress WHERE user_id = ? AND completed = 1`, [submission.user_id], (err, countResult) => {
+                            if (countResult && countResult.completed_courses >= 4) {
+                                // Получаем данные пользователя для сертификата
+                                db.get("SELECT full_name, username FROM users WHERE id = ?", [submission.user_id], (err, user) => {
+                                    if (user && !err) {
+                                        const userName = user.full_name || user.username || 'Участник';
+                                        const completionDate = new Date().toLocaleDateString('ru-RU');
+
+                                        // Генерируем сертификат
+                                        generateCertificate(userName, '', completionDate).then(certificateBuffer => {
+                                            // Отправляем сертификат пользователю
+                                            bot.sendPhoto(submission.telegram_id, certificateBuffer, {
+                                                caption: `🎉 Поздравляем с успешным завершением всех курсов! 🏆\n\n📜 Ваш сертификат готов!`
+                                            }).catch(console.error);
+                                        }).catch(console.error);
+                                    }
+                                });
+                            }
+                        });
+
                         // Уведомляем пользователя
                         bot.sendMessage(submission.telegram_id, 
                             `🎉 ТЕСТ ОДОБРЕН! ✅\n\n` +
@@ -4785,18 +4716,118 @@ function handleBalanceDeduct(chatId, telegramId, text) {
     }
 }
 
+function handleResetStats(chatId, telegramId) {
+    db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+        if (!admin) {
+            bot.sendMessage(chatId, '❌ Доступ запрещен! Только для администраторов.').catch(console.error);
+            return;
+        }
+
+        bot.sendMessage(chatId,
+            '⚠️ ВНИМАНИЕ: СБРОС СТАТИСТИКИ ⚠️\n\n' +
+            'Эта операция удалит ВСЕ записи из следующих таблиц:\n' +
+            '• intern_progress (прогресс стажеров)\n' +
+            '• test_submissions (заявки на тесты)\n' +
+            '• battles (PVP битвы)\n' +
+            '• purchases (покупки в магазине)\n' +
+            '• event_bookings (записи на мероприятия)\n' +
+            '• gifts (подарки коинов)\n' +
+            '• tasks (задачи)\n' +
+            '• achievements (достижения)\n' +
+            '• task_comments (комментарии к задачам)\n' +
+            '• achievement_likes (лайки достижений)\n' +
+            '• achievement_comments (комментарии к достижениям)\n' +
+            '• invoices (инвойсы)\n' +
+            '• company_contacts (контакты компаний)\n\n' +
+            '👤 Пользователи и администраторы останутся нетронутыми.\n\n' +
+            '❓ Вы уверены, что хотите продолжить?', {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{text: '✅ Да, сбросить статистику', callback_data: 'confirm_reset_stats'}],
+                        [{text: '❌ Отмена', callback_data: 'cancel_reset_stats'}]
+                    ]
+                }
+            }).catch(console.error);
+    });
+}
+
+function confirmResetStats(chatId, telegramId, callbackQueryId, messageId) {
+    db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+        if (!admin) {
+            bot.answerCallbackQuery(callbackQueryId, {text: '❌ Доступ запрещен!'});
+            return;
+        }
+
+        const tablesToReset = [
+            'intern_progress',
+            'test_submissions',
+            'battles',
+            'purchases',
+            'event_bookings',
+            'gifts',
+            'tasks',
+            'achievements',
+            'task_comments',
+            'achievement_likes',
+            'achievement_comments',
+            'invoices',
+            'company_contacts'
+        ];
+
+        let completed = 0;
+        const total = tablesToReset.length;
+
+        tablesToReset.forEach(table => {
+            db.run(`DELETE FROM ${table}`, (err) => {
+                if (err) {
+                    console.error(`Error deleting from ${table}:`, err);
+                }
+                completed++;
+                if (completed === total) {
+                    bot.answerCallbackQuery(callbackQueryId, {text: '✅ Статистика сброшена!'});
+                    bot.editMessageText(
+                        '✅ СТАТИСТИКА СБРОШЕНА! ✅\n\n' +
+                        'Все записи из указанных таблиц удалены.\n' +
+                        'Пользователи и администраторы остались нетронутыми.',
+                        {chat_id: chatId, message_id: messageId}
+                    );
+                }
+            });
+        });
+    });
+}
+
 process.on('SIGINT', () => {
     console.log('\n⏹️ Останавливаю бот...');
     console.log('💾 Закрываю базу данных...');
-    db.close((err) => {
-        if (err) {
-            console.error('❌ Ошибка закрытия БД:', err.message);
+    
+    // Закрываем PostgreSQL клиент если это подключение к PostgreSQL
+    const dbType = require('./config').DATABASE.type;
+    if (dbType === 'postgresql') {
+        // Если db - это наш универсальный модуль, проверим наличие метода end
+        if (typeof db.end === 'function') {
+            db.end(() => {
+                console.log('✅ База данных закрыта успешно');
+                console.log('👋 Бот остановлен! До встречи!');
+                process.exit(0);
+            });
         } else {
             console.log('✅ База данных закрыта успешно');
+            console.log('👋 Бот остановлен! До встречи!');
+            process.exit(0);
         }
-        console.log('👋 Бот остановлен! До встречи!');
-        process.exit(0);
-    });
+    } else {
+        // Для SQLite используем старую логику
+        db.close((err) => {
+            if (err) {
+                console.error('❌ Ошибка закрытия БД:', err.message);
+            } else {
+                console.log('✅ База данных закрыта успешно');
+            }
+            console.log('👋 Бот остановлен! До встречи!');
+            process.exit(0);
+        });
+    }
 });
 
 // ========== ФУНКЦИИ УПРАВЛЕНИЯ КОНТАКТАМИ ==========
@@ -5516,4 +5547,788 @@ function generateInvoicePDF(data, filePath) {
     stream.on('finish', () => {
         console.log(`PDF generated and saved to ${filePath} with even vertical distribution and single-page fit.`);
     });
+}
+
+// ========== CERTIFICATE GENERATION FUNCTION ==========
+
+async function generateCertificate(userName, courseName, completionDate) {
+    try {
+        // Load the template image
+        const templateImage = await loadImage('./template2.png');
+
+        // Create canvas with the same dimensions as the template
+        const canvas = createCanvas(templateImage.width, templateImage.height);
+        const ctx = canvas.getContext('2d');
+
+        // Draw the template image
+        ctx.drawImage(templateImage, 0, 0);
+
+        // Set font and color for text
+        ctx.font = 'bold 48px Arial';
+        ctx.fillStyle = '#2f187b'; // Indigo color
+        ctx.textAlign = 'center';
+
+        // Draw user name in the center (top area)
+        ctx.font = 'bold 59px Roboto';
+        const nameY = templateImage.height * 0.53; // 55% from top
+        ctx.fillText(userName, templateImage.width / 2, nameY);
+
+        // Draw congratulatory course text below the name
+        const congratText = `Поздравляем! Вы успешно завершили все курсы и стали настоящим мастером!`;
+        ctx.font = 'bold 22px Arial';
+        const courseY = nameY + 70; // Adjusted spacing for longer text
+        ctx.fillText(congratText, templateImage.width / 2, courseY);
+
+        // Draw completion date at the bottom
+        ctx.font = 'bold 50px Arial';
+        const dateY = templateImage.height * 0.85; // 85% from top
+        ctx.fillText(completionDate, templateImage.width * 0.26, dateY);
+
+        // Return the generated image as PNG buffer
+        return canvas.toBuffer('image/png');
+    } catch (error) {
+        console.error('❌ Certificate generation error:', error);
+        throw error;
+    }
+}
+
+// ========== ФУНКЦИИ СИСТЕМЫ ОТПУСКОВ ==========
+
+// Показать меню отпусков для сотрудника
+function showVacationMenu(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+            if (err || !user) {
+                bot.sendMessage(chatId, '❌ Пользователь не найден!').catch(console.error);
+                return;
+            }
+
+            // Получаем баланс отпуска на текущий год
+            const currentYear = new Date().getFullYear();
+            db.get("SELECT * FROM vacation_balances WHERE telegram_id = ? AND year = ?",
+                   [telegramId, currentYear], (err, balance) => {
+                if (!balance) {
+                    // Создаём начальный баланс для нового пользователя
+                    db.run("INSERT INTO vacation_balances (user_id, telegram_id, year) VALUES (?, ?, ?)",
+                           [user.id, telegramId, currentYear], () => {
+                        showVacationMenuWithBalance(chatId, { remaining_days: 28, used_days: 0, pending_days: 0 });
+                    });
+                } else {
+                    showVacationMenuWithBalance(chatId, balance);
+                }
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show vacation menu error:', error);
+        bot.sendMessage(chatId, '❌ Ошибка загрузки меню отпусков!').catch(console.error);
+    }
+}
+
+function showVacationMenuWithBalance(chatId, balance) {
+    const menuText =
+        '🏖️ СИСТЕМА ОТПУСКОВ 📅\n\n' +
+        '📊 Ваш баланс отпуска:\n' +
+        `🟢 Остаток дней: ${balance.remaining_days}\n` +
+        `🔵 Использовано: ${balance.used_days}\n` +
+        `🟡 На рассмотрении: ${balance.pending_days}\n\n` +
+        '👇 Выберите действие:';
+
+    bot.sendMessage(chatId, menuText, vacationKeyboard).catch(console.error);
+}
+
+// Показать админское меню управления отпусками
+function showAdminVacationMenu(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            bot.sendMessage(chatId,
+                '🏖️ УПРАВЛЕНИЕ ОТПУСКАМИ (HR) 👨‍💼\n\n' +
+                'Здесь вы можете управлять заявками на отпуск сотрудников.\n\n' +
+                '👇 Выберите действие:', adminVacationKeyboard).catch(console.error);
+        });
+    } catch (error) {
+        console.error('❌ Show admin vacation menu error:', error);
+    }
+}
+
+// Начать создание заявки на отпуск
+function startVacationRequest(chatId, telegramId) {
+    try {
+        global.vacationStates[telegramId] = {
+            step: 'start_date',
+            request: {}
+        };
+
+        bot.sendMessage(chatId,
+            '📝 ПОДАЧА ЗАЯВКИ НА ОТПУСК\n\n' +
+            '📅 Укажите дату начала отпуска в формате ДД.ММ.ГГГГ\n' +
+            'Например: 15.07.2024\n\n' +
+            '❌ Для отмены напишите "отмена"').catch(console.error);
+    } catch (error) {
+        console.error('❌ Start vacation request error:', error);
+    }
+}
+
+// Обработка ввода данных для заявки на отпуск
+function handleVacationInput(chatId, telegramId, text) {
+    try {
+        const state = global.vacationStates[telegramId];
+        if (!state) return false;
+
+        if (text.toLowerCase() === 'отмена') {
+            delete global.vacationStates[telegramId];
+            showVacationMenu(chatId, telegramId);
+            return true;
+        }
+
+        switch (state.step) {
+            case 'start_date':
+                if (!isValidDate(text)) {
+                    bot.sendMessage(chatId, '❌ Неверный формат даты! Используйте ДД.ММ.ГГГГ').catch(console.error);
+                    return true;
+                }
+                state.request.start_date = text;
+                state.step = 'end_date';
+                bot.sendMessage(chatId,
+                    '📅 Укажите дату окончания отпуска в формате ДД.ММ.ГГГГ\n' +
+                    'Например: 29.07.2024').catch(console.error);
+                break;
+
+            case 'end_date':
+                if (!isValidDate(text)) {
+                    bot.sendMessage(chatId, '❌ Неверный формат даты! Используйте ДД.ММ.ГГГГ').catch(console.error);
+                    return true;
+                }
+
+                const startDate = parseDate(state.request.start_date);
+                const endDate = parseDate(text);
+
+                if (endDate <= startDate) {
+                    bot.sendMessage(chatId, '❌ Дата окончания должна быть позже даты начала!').catch(console.error);
+                    return true;
+                }
+
+                state.request.end_date = text;
+                state.request.days_count = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+                state.step = 'vacation_type';
+
+                const typeKeyboard = {
+                    reply_markup: {
+                        keyboard: [
+                            ['Основной отпуск'],
+                            ['Учебный отпуск', 'Без сохранения з/п'],
+                            ['Больничный'],
+                            ['❌ Отмена']
+                        ],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                };
+
+                bot.sendMessage(chatId,
+                    `📊 Период: ${state.request.start_date} - ${state.request.end_date}\n` +
+                    `⏰ Количество дней: ${state.request.days_count}\n\n` +
+                    '📋 Выберите тип отпуска:', typeKeyboard).catch(console.error);
+                break;
+
+            case 'vacation_type':
+                const validTypes = ['Основной отпуск', 'Учебный отпуск', 'Без сохранения з/п', 'Больничный'];
+                if (!validTypes.includes(text)) {
+                    bot.sendMessage(chatId, '❌ Выберите тип отпуска из предложенных вариантов!').catch(console.error);
+                    return true;
+                }
+
+                state.request.vacation_type = text;
+                state.step = 'reason';
+                bot.sendMessage(chatId,
+                    '💭 Укажите причину/комментарий к заявке (необязательно):\n\n' +
+                    '▶️ Для пропуска нажмите "Пропустить"').catch(console.error);
+                break;
+
+            case 'reason':
+                if (text !== 'Пропустить') {
+                    state.request.reason = text;
+                }
+                submitVacationRequest(chatId, telegramId, state.request);
+                break;
+        }
+
+        return true;
+    } catch (error) {
+        console.error('❌ Handle vacation input error:', error);
+        return false;
+    }
+}
+
+// Подача заявки на отпуск
+function submitVacationRequest(chatId, telegramId, request) {
+    try {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+            if (err || !user) {
+                bot.sendMessage(chatId, '❌ Ошибка пользователя!').catch(console.error);
+                return;
+            }
+
+            // Проверяем баланс отпуска
+            const currentYear = new Date().getFullYear();
+            db.get("SELECT * FROM vacation_balances WHERE telegram_id = ? AND year = ?",
+                   [telegramId, currentYear], (err, balance) => {
+
+                if (!balance || balance.remaining_days < request.days_count) {
+                    bot.sendMessage(chatId,
+                        `❌ Недостаточно дней отпуска!\n` +
+                        `Запрашиваете: ${request.days_count} дней\n` +
+                        `Остаток: ${balance ? balance.remaining_days : 0} дней`).catch(console.error);
+                    delete global.vacationStates[telegramId];
+                    return;
+                }
+
+                // Сохраняем заявку
+                db.run(`INSERT INTO vacation_requests
+                        (user_id, telegram_id, start_date, end_date, vacation_type, reason, days_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    [user.id, telegramId, request.start_date, request.end_date,
+                     request.vacation_type, request.reason, request.days_count], () => {
+
+                    // Обновляем баланс (резервируем дни)
+                    db.run(`UPDATE vacation_balances
+                            SET pending_days = pending_days + ?, remaining_days = remaining_days - ?
+                            WHERE telegram_id = ? AND year = ?`,
+                        [request.days_count, request.days_count, telegramId, currentYear], () => {
+
+                        bot.sendMessage(chatId,
+                            '✅ ЗАЯВКА НА ОТПУСК ПОДАНА! 🎉\n\n' +
+                            `📅 Период: ${request.start_date} - ${request.end_date}\n` +
+                            `⏰ Дней: ${request.days_count}\n` +
+                            `📋 Тип: ${request.vacation_type}\n` +
+                            `💭 Причина: ${request.reason || 'Не указана'}\n\n` +
+                            '⏳ Заявка отправлена на рассмотрение HR!\n' +
+                            '📧 Вы получите уведомление о решении.', vacationKeyboard).catch(console.error);
+
+                        delete global.vacationStates[telegramId];
+                    });
+                });
+            });
+        });
+    } catch (error) {
+        console.error('❌ Submit vacation request error:', error);
+    }
+}
+
+// Показать заявки пользователя на отпуск
+function showUserVacationRequests(chatId, telegramId) {
+    try {
+        db.all("SELECT * FROM vacation_requests WHERE telegram_id = ? ORDER BY requested_date DESC",
+               [telegramId], (err, requests) => {
+
+            if (err || !requests || requests.length === 0) {
+                bot.sendMessage(chatId,
+                    '📋 У вас пока нет заявок на отпуск.\n\n' +
+                    '💡 Подайте заявку через кнопку "📝 Подать заявку"', vacationKeyboard).catch(console.error);
+                return;
+            }
+
+            let requestsText = '📋 ВАШИ ЗАЯВКИ НА ОТПУСК:\n\n';
+
+            requests.forEach((req, index) => {
+                const statusEmoji = {
+                    'pending': '🟡',
+                    'approved': '🟢',
+                    'rejected': '🔴'
+                };
+
+                const statusText = {
+                    'pending': 'На рассмотрении',
+                    'approved': 'Одобрено',
+                    'rejected': 'Отклонено'
+                };
+
+                requestsText += `${index + 1}. ${statusEmoji[req.status]} ${statusText[req.status]}\n`;
+                requestsText += `📅 ${req.start_date} - ${req.end_date} (${req.days_count} дн.)\n`;
+                requestsText += `📋 ${req.vacation_type}\n`;
+
+                if (req.reviewer_comment) {
+                    requestsText += `💬 Комментарий HR: ${req.reviewer_comment}\n`;
+                }
+
+                requestsText += `📄 Подано: ${new Date(req.requested_date).toLocaleDateString('ru-RU')}\n\n`;
+            });
+
+            bot.sendMessage(chatId, requestsText, vacationKeyboard).catch(console.error);
+        });
+    } catch (error) {
+        console.error('❌ Show user vacation requests error:', error);
+    }
+}
+
+// Вспомогательные функции
+function isValidDate(dateStr) {
+    const regex = /^\d{2}\.\d{2}\.\d{4}$/;
+    if (!regex.test(dateStr)) return false;
+
+    const [day, month, year] = dateStr.split('.').map(Number);
+    const date = new Date(year, month - 1, day);
+
+    return date.getDate() === day &&
+           date.getMonth() === month - 1 &&
+           date.getFullYear() === year &&
+           date >= new Date();
+}
+function parseDate(dateStr) {
+    const [day, month, year] = dateStr.split('.').map(Number);
+    return new Date(year, month - 1, day);
+}
+// ========== HR ФУНКЦИИ УПРАВЛЕНИЯ ОТПУСКАМИ ==========
+
+// Показать все заявки на отпуск для HR
+function showAdminVacationRequests(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            db.all(`SELECT vr.*, u.full_name, u.username
+                    FROM vacation_requests vr
+                    JOIN users u ON vr.telegram_id = u.telegram_id
+                    ORDER BY
+                        CASE vr.status
+                            WHEN 'pending' THEN 1
+                            WHEN 'approved' THEN 2
+                            WHEN 'rejected' THEN 3
+                        END,
+                        vr.requested_date DESC`, (err, requests) => {
+
+                if (err || !requests || requests.length === 0) {
+                    bot.sendMessage(chatId,
+                        '📋 Заявок на отпуск пока нет.\n\n' +
+                        '💼 Как только сотрудники подадут заявки, они появятся здесь.',
+                        adminVacationKeyboard).catch(console.error);
+                    return;
+                }
+
+                let requestsText = '📋 ЗАЯВКИ НА ОТПУСК (HR)\n\n';
+                let pendingCount = 0;
+
+                requests.forEach((req, index) => {
+                    const statusEmoji = {
+                        'pending': '🟡',
+                        'approved': '✅',
+                        'rejected': '❌'
+                    };
+
+                    const statusText = {
+                        'pending': 'ТРЕБУЕТ РЕШЕНИЯ',
+                        'approved': 'Одобрено',
+                        'rejected': 'Отклонено'
+                    };
+
+                    if (req.status === 'pending') pendingCount++;
+
+                    requestsText += `${statusEmoji[req.status]} ${statusText[req.status]}\n`;
+                    requestsText += `👤 ${req.full_name || req.username}\n`;
+                    requestsText += `📅 ${req.start_date} - ${req.end_date} (${req.days_count} дн.)\n`;
+                    requestsText += `📋 ${req.vacation_type}\n`;
+
+                    if (req.reason) {
+                        requestsText += `💭 ${req.reason}\n`;
+                    }
+
+                    requestsText += `📄 ID: ${req.id} | ${new Date(req.requested_date).toLocaleDateString('ru-RU')}\n\n`;
+                });
+
+                requestsText += `\n⚡ Ожидают решения: ${pendingCount} заявок\n`;
+                requestsText += `\n💡 Для одобрения/отклонения используйте:\n`;
+                requestsText += `▶️ "одобрить ID" или "отклонить ID причина"`;
+
+                bot.sendMessage(chatId, requestsText, adminVacationKeyboard).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show admin vacation requests error:', error);
+    }
+}
+
+// Показать календарь отпусков команды
+function showTeamVacationCalendar(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            const currentDate = new Date();
+            const currentMonth = currentDate.getMonth();
+            const currentYear = currentDate.getFullYear();
+
+            // Получаем одобренные отпуска на ближайшие 3 месяца
+            const endDate = new Date(currentYear, currentMonth + 3, 0);
+
+            db.all(`SELECT vr.*, u.full_name, u.username
+                    FROM vacation_requests vr
+                    JOIN users u ON vr.telegram_id = u.telegram_id
+                    WHERE vr.status = 'approved'
+                    ORDER BY vr.start_date`, (err, approvedVacations) => {
+
+                let calendarText = '📅 КАЛЕНДАРЬ ОТПУСКОВ КОМАНДЫ\n\n';
+
+                if (!approvedVacations || approvedVacations.length === 0) {
+                    calendarText += '🏖️ Одобренных отпусков пока нет.\n\n';
+                } else {
+                    calendarText += '✅ ОДОБРЕННЫЕ ОТПУСКИ:\n\n';
+
+                    approvedVacations.forEach((vacation) => {
+                        calendarText += `👤 ${vacation.full_name || vacation.username}\n`;
+                        calendarText += `📅 ${vacation.start_date} - ${vacation.end_date}\n`;
+                        calendarText += `⏰ ${vacation.days_count} дней (${vacation.vacation_type})\n\n`;
+                    });
+                }
+
+                // Показываем также заявки на рассмотрении
+                db.all(`SELECT vr.*, u.full_name, u.username
+                        FROM vacation_requests vr
+                        JOIN users u ON vr.telegram_id = u.telegram_id
+                        WHERE vr.status = 'pending'
+                        ORDER BY vr.start_date`, (err, pendingVacations) => {
+
+                    if (pendingVacations && pendingVacations.length > 0) {
+                        calendarText += '🟡 НА РАССМОТРЕНИИ:\n\n';
+
+                        pendingVacations.forEach((vacation) => {
+                            calendarText += `👤 ${vacation.full_name || vacation.username}\n`;
+                            calendarText += `📅 ${vacation.start_date} - ${vacation.end_date}\n`;
+                            calendarText += `⏰ ${vacation.days_count} дней\n\n`;
+                        });
+                    }
+
+                    bot.sendMessage(chatId, calendarText, adminVacationKeyboard).catch(console.error);
+                });
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show team vacation calendar error:', error);
+    }
+}
+
+// Показать балансы отпусков сотрудников
+function showEmployeeBalances(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            const currentYear = new Date().getFullYear();
+
+            db.all(`SELECT u.full_name, u.username, u.telegram_id, u.role,
+                           vb.total_days, vb.used_days, vb.pending_days, vb.remaining_days
+                    FROM users u
+                    LEFT JOIN vacation_balances vb ON u.telegram_id = vb.telegram_id AND vb.year = ?
+                    WHERE u.is_registered = 1
+                    ORDER BY u.full_name`, [currentYear], (err, employees) => {
+
+                if (err || !employees || employees.length === 0) {
+                    bot.sendMessage(chatId, '👥 Сотрудников не найдено.', adminVacationKeyboard).catch(console.error);
+                    return;
+                }
+
+                let balanceText = `👥 БАЛАНСЫ ОТПУСКОВ (${currentYear})\n\n`;
+
+                employees.forEach((emp, index) => {
+                    const roleEmoji = emp.role === 'стажер' ? '👶' : '🧓';
+                    const totalDays = emp.total_days || 28;
+                    const usedDays = emp.used_days || 0;
+                    const pendingDays = emp.pending_days || 0;
+                    const remainingDays = emp.remaining_days || 28;
+
+                    balanceText += `${index + 1}. ${roleEmoji} ${emp.full_name || emp.username}\n`;
+                    balanceText += `   📊 ${remainingDays}/${totalDays} дней`;
+
+                    if (usedDays > 0) balanceText += ` | Использовано: ${usedDays}`;
+                    if (pendingDays > 0) balanceText += ` | На рассмотрении: ${pendingDays}`;
+
+                    balanceText += '\n\n';
+                });
+
+                balanceText += '💡 Для изменения баланса используйте:\n';
+                balanceText += '"установить баланс ID количество"';
+
+                bot.sendMessage(chatId, balanceText, adminVacationKeyboard).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show employee balances error:', error);
+    }
+}
+
+// Показать статистику отпусков
+function showVacationStats(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            const currentYear = new Date().getFullYear();
+
+            db.all(`SELECT
+                        COUNT(*) as total_requests,
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_requests,
+                        SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_requests,
+                        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_requests,
+                        SUM(CASE WHEN status = 'approved' THEN days_count ELSE 0 END) as total_approved_days,
+                        AVG(CASE WHEN status = 'approved' THEN days_count ELSE NULL END) as avg_vacation_days
+                    FROM vacation_requests
+                    WHERE strftime('%Y', requested_date) = ?`, [currentYear.toString()], (err, stats) => {
+
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка загрузки статистики.', adminVacationKeyboard).catch(console.error);
+                    return;
+                }
+
+                const stat = stats[0];
+
+                let statsText = `📊 СТАТИСТИКА ОТПУСКОВ (${currentYear})\n\n`;
+
+                statsText += `📋 Всего заявок: ${stat.total_requests || 0}\n`;
+                statsText += `🟡 На рассмотрении: ${stat.pending_requests || 0}\n`;
+                statsText += `✅ Одобрено: ${stat.approved_requests || 0}\n`;
+                statsText += `❌ Отклонено: ${stat.rejected_requests || 0}\n\n`;
+
+                statsText += `📅 Общий одобренный отпуск: ${stat.total_approved_days || 0} дней\n`;
+
+                if (stat.avg_vacation_days) {
+                    statsText += `📈 Средняя длительность: ${Math.round(stat.avg_vacation_days)} дней\n`;
+                }
+
+                // Статистика по типам отпусков
+                db.all(`SELECT vacation_type, COUNT(*) as count
+                        FROM vacation_requests
+                        WHERE status = 'approved' AND strftime('%Y', requested_date) = ?
+                        GROUP BY vacation_type`, [currentYear.toString()], (err, typeStats) => {
+
+                    if (typeStats && typeStats.length > 0) {
+                        statsText += '\n📋 По типам отпусков:\n';
+                        typeStats.forEach(type => {
+                            statsText += `▶️ ${type.vacation_type}: ${type.count}\n`;
+                        });
+                    }
+
+                    bot.sendMessage(chatId, statsText, adminVacationKeyboard).catch(console.error);
+                });
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show vacation stats error:', error);
+    }
+}
+
+// Обработка админских команд для управления отпусками
+function handleVacationAdminCommands(chatId, telegramId, text) {
+    try {
+        const lowerText = text.toLowerCase().trim();
+
+        // Проверяем админские права
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) return false;
+
+            // Команда одобрения: "одобрить 1"
+            if (lowerText.startsWith('одобрить ')) {
+                const requestId = lowerText.replace('одобрить ', '').trim();
+                if (!isNaN(requestId)) {
+                    approveVacationRequest(chatId, telegramId, parseInt(requestId));
+                    return true;
+                }
+            }
+
+            // Команда отклонения: "отклонить 1 причина отклонения"
+            if (lowerText.startsWith('отклонить ')) {
+                const parts = lowerText.replace('отклонить ', '').split(' ');
+                const requestId = parts[0];
+                const reason = parts.slice(1).join(' ') || 'Без указания причины';
+
+                if (!isNaN(requestId)) {
+                    rejectVacationRequest(chatId, telegramId, parseInt(requestId), reason);
+                    return true;
+                }
+            }
+
+            // Команда установки баланса: "установить баланс 123456789 30"
+            if (lowerText.startsWith('установить баланс ')) {
+                const parts = lowerText.replace('установить баланс ', '').split(' ');
+                const userTelegramId = parts[0];
+                const days = parts[1];
+
+                if (!isNaN(userTelegramId) && !isNaN(days)) {
+                    setVacationBalance(chatId, telegramId, parseInt(userTelegramId), parseInt(days));
+                    return true;
+                }
+            }
+
+            return false;
+        });
+
+        return false;
+    } catch (error) {
+        console.error('❌ Handle vacation admin commands error:', error);
+        return false;
+    }
+}
+
+// Одобрить заявку на отпуск
+function approveVacationRequest(chatId, adminId, requestId) {
+    try {
+        db.get("SELECT vr.*, u.full_name, u.username FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
+               [requestId], (err, request) => {
+
+            if (err || !request) {
+                bot.sendMessage(chatId, '❌ Заявка не найдена!').catch(console.error);
+                return;
+            }
+
+            if (request.status !== 'pending') {
+                bot.sendMessage(chatId, `❌ Заявка уже обработана (${request.status})!`).catch(console.error);
+                return;
+            }
+
+            const currentYear = new Date().getFullYear();
+
+            // Обновляем статус заявки
+            db.run(`UPDATE vacation_requests SET status = 'approved', reviewed_date = CURRENT_TIMESTAMP, reviewer_id = ?
+                    WHERE id = ?`, [adminId, requestId], () => {
+
+                // Перемещаем дни из "на рассмотрении" в "использовано"
+                db.run(`UPDATE vacation_balances
+                        SET used_days = used_days + ?,
+                            pending_days = pending_days - ?,
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE telegram_id = ? AND year = ?`,
+                    [request.days_count, request.days_count, request.telegram_id, currentYear], () => {
+
+                    // Уведомляем HR
+                    bot.sendMessage(chatId,
+                        `✅ ЗАЯВКА ОДОБРЕНА!\n\n` +
+                        `👤 Сотрудник: ${request.full_name || request.username}\n` +
+                        `📅 Период: ${request.start_date} - ${request.end_date}\n` +
+                        `⏰ Дней: ${request.days_count}\n` +
+                        `📋 Тип: ${request.vacation_type}\n\n` +
+                        '✅ Сотрудник получит уведомление!',
+                        adminVacationKeyboard).catch(console.error);
+
+                    // Уведомляем сотрудника
+                    bot.sendMessage(request.telegram_id,
+                        `🎉 ВАША ЗАЯВКА НА ОТПУСК ОДОБРЕНА!\n\n` +
+                        `📅 Период: ${request.start_date} - ${request.end_date}\n` +
+                        `⏰ Дней: ${request.days_count}\n` +
+                        `📋 Тип: ${request.vacation_type}\n\n` +
+                        `🏖️ Приятного отдыха!`).catch(console.error);
+                });
+            });
+        });
+    } catch (error) {
+        console.error('❌ Approve vacation request error:', error);
+    }
+}
+
+// Отклонить заявку на отпуск
+function rejectVacationRequest(chatId, adminId, requestId, reason) {
+    try {
+        db.get("SELECT vr.*, u.full_name, u.username FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
+               [requestId], (err, request) => {
+
+            if (err || !request) {
+                bot.sendMessage(chatId, '❌ Заявка не найдена!').catch(console.error);
+                return;
+            }
+
+            if (request.status !== 'pending') {
+                bot.sendMessage(chatId, `❌ Заявка уже обработана (${request.status})!`).catch(console.error);
+                return;
+            }
+
+            const currentYear = new Date().getFullYear();
+
+            // Обновляем статус заявки
+            db.run(`UPDATE vacation_requests SET status = 'rejected', reviewed_date = CURRENT_TIMESTAMP,
+                    reviewer_id = ?, reviewer_comment = ? WHERE id = ?`,
+                   [adminId, reason, requestId], () => {
+
+                // Возвращаем дни из "на рассмотрении" в "остаток"
+                db.run(`UPDATE vacation_balances
+                        SET remaining_days = remaining_days + ?,
+                            pending_days = pending_days - ?,
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE telegram_id = ? AND year = ?`,
+                    [request.days_count, request.days_count, request.telegram_id, currentYear], () => {
+
+                    // Уведомляем HR
+                    bot.sendMessage(chatId,
+                        `❌ ЗАЯВКА ОТКЛОНЕНА!\n\n` +
+                        `👤 Сотрудник: ${request.full_name || request.username}\n` +
+                        `📅 Период: ${request.start_date} - ${request.end_date}\n` +
+                        `💭 Причина: ${reason}\n\n` +
+                        '📧 Сотрудник получит уведомление!',
+                        adminVacationKeyboard).catch(console.error);
+
+                    // Уведомляем сотрудника
+                    bot.sendMessage(request.telegram_id,
+                        `❌ ВАША ЗАЯВКА НА ОТПУСК ОТКЛОНЕНА\n\n` +
+                        `📅 Период: ${request.start_date} - ${request.end_date}\n` +
+                        `⏰ Дней: ${request.days_count}\n` +
+                        `💭 Причина отклонения: ${reason}\n\n` +
+                        `🔄 Дни возвращены в ваш баланс.\n` +
+                        `💡 Вы можете подать новую заявку.`).catch(console.error);
+                });
+            });
+        });
+    } catch (error) {
+        console.error('❌ Reject vacation request error:', error);
+    }
+}
+
+// Установить баланс отпуска для сотрудника
+function setVacationBalance(chatId, adminId, userTelegramId, days) {
+    try {
+        const currentYear = new Date().getFullYear();
+
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [userTelegramId], (err, user) => {
+            if (err || !user) {
+                bot.sendMessage(chatId, '❌ Сотрудник не найден!').catch(console.error);
+                return;
+            }
+
+            // Создаём или обновляем баланс
+            db.run(`INSERT OR REPLACE INTO vacation_balances
+                    (user_id, telegram_id, year, total_days, remaining_days, used_days, pending_days)
+                    VALUES (?, ?, ?, ?, ?,
+                            COALESCE((SELECT used_days FROM vacation_balances WHERE telegram_id = ? AND year = ?), 0),
+                            COALESCE((SELECT pending_days FROM vacation_balances WHERE telegram_id = ? AND year = ?), 0))`,
+                [user.id, userTelegramId, currentYear, days, days, userTelegramId, currentYear, userTelegramId, currentYear], () => {
+
+                bot.sendMessage(chatId,
+                    `✅ БАЛАНС ОБНОВЛЁН!\n\n` +
+                    `👤 Сотрудник: ${user.full_name || user.username}\n` +
+                    `📊 Новый баланс: ${days} дней\n` +
+                    `📅 Год: ${currentYear}`,
+                    adminVacationKeyboard).catch(console.error);
+
+                // Уведомляем сотрудника
+                bot.sendMessage(userTelegramId,
+                    `📊 ВАШ БАЛАНС ОТПУСКА ОБНОВЛЁН!\n\n` +
+                    `🟢 Доступно дней: ${days}\n` +
+                    `📅 Год: ${currentYear}\n\n` +
+                    `💼 Обновлено администратором.`).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Set vacation balance error:', error);
+    }
 }
