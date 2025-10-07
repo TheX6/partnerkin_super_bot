@@ -103,26 +103,27 @@ app.listen(PORT, async () => {
 
     // Set webhook for production using axios (avoids request library bug)
     if (process.env.RENDER_EXTERNAL_URL || process.env.RENDER === 'true') {
-        const webhookUrl = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_URL;
-        if (webhookUrl) {
-            try {
-                const fullWebhookUrl = `${webhookUrl}/bot${config.TELEGRAM_TOKEN}`;
+        const webhookUrl = process.env.RENDER_EXTERNAL_URL || 'https://partnerkin-superbot2.onrender.com';
+        try {
+            const fullWebhookUrl = `${webhookUrl}/bot${config.TELEGRAM_TOKEN}`;
 
-                // Use axios to set webhook (avoids ERR_UNESCAPED_CHARACTERS)
-                const setWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/setWebhook`;
-                await axios.post(setWebhookUrl, { url: fullWebhookUrl });
+            // Use GET request with query params (more reliable than POST)
+            const setWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/setWebhook?url=${encodeURIComponent(fullWebhookUrl)}`;
+            const setResult = await axios.get(setWebhookUrl);
+
+            if (setResult.data.ok) {
                 console.log(`✅ Webhook set to: ${fullWebhookUrl}`);
-
-                // Verify webhook using axios
-                const getWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/getWebhookInfo`;
-                const response = await axios.get(getWebhookUrl);
-                console.log(`📡 Webhook info:`, response.data.result);
-            } catch (error) {
-                console.error('❌ Failed to set webhook:', error.message);
-                console.log('⚠️  Bot will not receive updates until webhook is set correctly');
+            } else {
+                console.error('❌ Failed to set webhook:', setResult.data.description);
             }
-        } else {
-            console.warn('⚠️  RENDER_EXTERNAL_URL not set - webhook cannot be configured');
+
+            // Verify webhook using GET
+            const getWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/getWebhookInfo`;
+            const response = await axios.get(getWebhookUrl);
+            console.log(`📡 Webhook info:`, response.data.result);
+        } catch (error) {
+            console.error('❌ Failed to set webhook:', error.message);
+            console.log('⚠️  Webhook may already be set correctly - check logs above');
         }
     } else {
         console.log('🏠 Running in local mode - no webhook set');
