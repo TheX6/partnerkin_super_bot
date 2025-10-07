@@ -37,3 +37,32 @@ invoices/
 TEST_REPORT.md
 INVOICE_TEST_GUIDE.md
 QR_CONTACT_SHARING_TEST.md
+
+# Тестовые скрипты
+*_test.js
+*test*.js
+comprehensive_bot_test.test.js
+bot_functionality.test.js
+test_postgresql_fixes.js
+
+# Документация (кроме README.md)
+*.md
+!README.md
+
+# Бэкапы
+backup/
+*.bak
+app.js.backup
+
+# Дополнительные скрипты миграции
+migrate_*.js
+add_*.js
+transfer_*.js
+update_*.js
+
+# Конфигурационные файлы (кроме .env.example)
+config.js
+database.js
+start.js
+server.js
+clicker-app-updated.js
