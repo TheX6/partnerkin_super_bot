@@ -1,5 +1,5 @@
 services:
-  # Web service for Express server and bot
+  # Web service for Express server and bot (Webhook mode)
   - type: web
     name: partnerkin-bot
     runtime: node
@@ -18,5 +18,12 @@ services:
         value: sqlite
       - key: DB_FILENAME
         value: /opt/render/project/src/partnerkino.db
+      - key: RENDER
+        value: true
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          type: web
+          name: partnerkin-bot
+          property: url
     autoDeploy: true
     healthCheckPath: /health

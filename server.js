@@ -1,8 +1,7 @@
-// server.js - HTTP сервер для Web App API
+// server.js - HTTP сервер для Web App API и Telegram Webhook
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
-const sqlite3 = require('sqlite3').verbose();
 const config = require('./config');
 
 const app = express();
@@ -12,8 +11,8 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'webapp')));
 
-// База данных (та же что и в боте)
-const db = new sqlite3.Database(config.DATABASE.name);
+// Import bot from app.js (will NOT start polling, only webhook)
+const { bot, db } = require('./app.js');
 
 // Функция для проверки данных Telegram Web App
 function verifyTelegramWebApp(initData, botToken) {
@@ -74,6 +73,17 @@ app.get('/ping', (req, res) => {
     res.status(200).json({ pong: Date.now() });
 });
 
+// Telegram Webhook endpoint
+app.post(`/bot${config.TELEGRAM_TOKEN}`, (req, res) => {
+    try {
+        bot.processUpdate(req.body);
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('❌ Webhook error:', error);
+        res.sendStatus(500);
+    }
+});
+
 // Статическая раздача веб-приложения
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'webapp', 'index.html'));
@@ -86,9 +96,32 @@ app.use((err, req, res, next) => {
 });
 
 // Запуск сервера
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`🌐 Web App server running on port ${PORT}`);
     console.log(`📱 Access your app at: http://localhost:${PORT}`);
+
+    // Set webhook for production
+    if (process.env.RENDER_EXTERNAL_URL || process.env.RENDER === 'true') {
+        const webhookUrl = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_URL;
+        if (webhookUrl) {
+            try {
+                const fullWebhookUrl = `${webhookUrl}/bot${config.TELEGRAM_TOKEN}`;
+                await bot.setWebHook(fullWebhookUrl);
+                console.log(`✅ Webhook set to: ${fullWebhookUrl}`);
+
+                // Verify webhook
+                const webhookInfo = await bot.getWebHookInfo();
+                console.log(`📡 Webhook info:`, webhookInfo);
+            } catch (error) {
+                console.error('❌ Failed to set webhook:', error.message);
+                console.log('⚠️  Bot will not receive updates until webhook is set correctly');
+            }
+        } else {
+            console.warn('⚠️  RENDER_EXTERNAL_URL not set - webhook cannot be configured');
+        }
+    } else {
+        console.log('🏠 Running in local mode - no webhook set');
+    }
 });
 
 module.exports = app;

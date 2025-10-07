@@ -47,26 +47,11 @@ const axios = require('axios');
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
 
+// Initialize bot WITHOUT polling - we'll use webhooks instead
 const bot = new TelegramBot(token, {
-    polling: {
-        interval: 300,
-        autoStart: true,
-        params: {
-            timeout: 10
-        }
-    },
+    polling: false,
     filepath: false,
-    baseApiUrl: `https://api.telegram.org`
-});
-
-// Handle polling errors
-bot.on('polling_error', (error) => {
-    if (error.code === 'EFATAL' && error.message.includes('ERR_UNESCAPED_CHARACTERS')) {
-        console.error('⚠️  URL encoding error detected, this is a known issue with the request library');
-        console.error('Bot will continue running, ignoring this error');
-        return;
-    }
-    console.error('❌ Polling error:', error.code, error.message);
+    webHook: false
 });
 
 // Wrap bot methods to use axios instead of request for problematic calls
@@ -8943,3 +8928,7 @@ function handleCompanyInfoCollection(chatId, telegramId, text, state) {
         bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте еще раз.');
     }
 }
+// Export bot and database for use in server.js
+module.exports = { bot, db };
+
+console.log('✅ Bot module loaded successfully (webhook mode)');

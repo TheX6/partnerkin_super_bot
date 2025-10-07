@@ -59,7 +59,10 @@ ADMIN_PASSWORD = partnerkin1212
 DB_TYPE = sqlite
 DB_FILENAME = /opt/render/project/src/partnerkino.db
 RENDER = true
+RENDER_EXTERNAL_URL = https://partnerkin-bot.onrender.com
 ```
+
+⚠️ **ВАЖНО**: Замените `https://partnerkin-bot.onrender.com` на реальный URL вашего сервиса на Render (будет доступен после создания)!
 
 ⚠️ **ВАЖНО**: Для `TELEGRAM_TOKEN` отметьте галочку "Secret" чтобы скрыть токен!
 
@@ -74,10 +77,11 @@ RENDER = true
 
 **В логах вы должны увидеть:**
 ```
-🚀 Starting Partnerkin Bot in production mode...
-🌐 Detected Render free tier - running in single process mode
+🚀 Starting Partnerkin Bot in production mode (Webhook)...
 🌐 Web App server running on port 10000
-🤖 Bot started successfully!
+✅ Bot module loaded successfully (webhook mode)
+✅ Webhook set to: https://ваш-сервис.onrender.com/bot7774658901:...
+📡 Webhook info: { url: '...', has_custom_certificate: false, pending_update_count: 0 }
 ```
 
 **Проверить здоровье сервиса:**
@@ -102,13 +106,10 @@ RENDER = true
 
 ## 🔧 Если что-то пошло не так
 
-### Ошибка в логах: "ERR_UNESCAPED_CHARACTERS"
-✅ **Это нормально!** Вы увидите:
-```
-⚠️ URL encoding error detected, this is a known issue with the request library
-⚠️ Using axios fallback for sendMessage
-```
-Бот автоматически использует альтернативный метод отправки. Сообщения будут доставлены!
+### Ошибка: "Failed to set webhook"
+1. Проверьте что `RENDER_EXTERNAL_URL` правильно указан
+2. URL должен быть HTTPS (Render автоматически предоставляет SSL)
+3. Скопируйте URL из Dashboard Render и установите вручную через BotFather или API
 
 ### Бот не отвечает
 1. Проверьте логи: есть ли ошибки?
