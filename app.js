@@ -374,6 +374,31 @@ db.serialize(() => {
             });
         }
     });
+
+    // Add company info columns to conference_contacts table
+    columnExists('conference_contacts', 'company_name', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE conference_contacts ADD COLUMN company_name TEXT", (err) => {
+                if (err) console.log("ALTER company_name error:", err.message);
+            });
+        }
+    });
+
+    columnExists('conference_contacts', 'position', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE conference_contacts ADD COLUMN position TEXT", (err) => {
+                if (err) console.log("ALTER position error:", err.message);
+            });
+        }
+    });
+
+    columnExists('conference_contacts', 'comment', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE conference_contacts ADD COLUMN comment TEXT", (err) => {
+                if (err) console.log("ALTER comment error:", err.message);
+            });
+        }
+    });
     columnExists('invoices', 'invoice_number', (exists) => {
         if (!exists) {
             db.run("ALTER TABLE invoices ADD COLUMN invoice_number INTEGER", (err) => {
@@ -654,6 +679,190 @@ function showQrContactsMenu(chatId, telegramId) {
         '✨ Быстрый обмен контактами на конференциях\n' +
         '📋 Управляй своими рабочими контактами\n\n' +
         '👇 Выбери действие:', qrContactsKeyboard).catch(console.error);
+}
+
+// Show user's conference contacts
+function showMyContacts(chatId, telegramId) {
+    // Get user's ID
+    db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err) {
+            console.error('Error getting user ID:', err);
+            bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте еще раз.');
+            return;
+        }
+        
+        if (!user) {
+            bot.sendMessage(chatId, '❌ Пользователь не найден. Пожалуйста, зарегистрируйтесь сначала.');
+            return;
+        }
+        
+        // Get contacts where user is either scanner or manager
+        db.all(`SELECT cc.*,
+                scanner.username as scanner_username, scanner.telegram_id as scanner_telegram_id,
+                manager.username as manager_username, manager.telegram_id as manager_telegram_id
+                FROM conference_contacts cc
+                LEFT JOIN users scanner ON cc.scanner_id = scanner.id
+                LEFT JOIN users manager ON cc.manager_id = manager.id
+                WHERE cc.scanner_id = ? OR cc.manager_id = ?
+                ORDER BY cc.exchange_date DESC`,
+                [user.id, user.id], (err, contacts) => {
+            if (err) {
+                console.error('Error getting conference contacts:', err);
+                bot.sendMessage(chatId, '❌ Произошла ошибка при загрузке контактов.');
+                return;
+            }
+            
+            if (contacts.length === 0) {
+                bot.sendMessage(chatId,
+                    '📇 *Контакты с конфы*\n\n' +
+                    'У вас пока нет контактов с конференций.\n\n' +
+                    'Отсканируйте QR-коды коллег на конференции, чтобы добавить их в этот список!',
+                    { parse_mode: 'Markdown' }
+                );
+                return;
+            }
+            
+            // Send introduction message
+            bot.sendMessage(chatId,
+                '📇 *Ваши контакты с конференций*\n\n' +
+                'Нажмите на кнопку "💬 Написать", чтобы перейти в чат с контактом:',
+                { parse_mode: 'Markdown' }
+            );
+            
+            // Send each contact as a separate message with button
+            contacts.forEach((contact, index) => {
+                const isScanner = contact.scanner_id === user.id;
+                const contactInfo = isScanner ? contact.manager_contact : contact.scanner_contact;
+                const exchangeDate = new Date(contact.exchange_date).toLocaleDateString('ru-RU');
+                
+                // Get the other person's username and telegram_id
+                const otherUsername = isScanner ? contact.manager_username : contact.scanner_username;
+                const otherTelegramId = isScanner ? contact.manager_telegram_id : contact.scanner_telegram_id;
+                
+                // Format contact message
+                let message = `${index + 1}. *${exchangeDate}*\n`;
+                message += `${contactInfo}\n`;
+                
+                // Add company info if available
+                if (contact.company_name) {
+                    message += `🏢 Компания: ${contact.company_name}\n`;
+                }
+                if (contact.position) {
+                    message += `💼 Должность: ${contact.position}\n`;
+                }
+                if (contact.comment) {
+                    message += `💬 Комментарий: ${contact.comment}\n`;
+                }
+                
+                // Create inline keyboard with "Write" button
+                const keyboard = {
+                    inline_keyboard: [[
+                        { text: '💬 Написать', url: `https://t.me/${otherUsername || `user${otherTelegramId}`}` }
+                    ]]
+                };
+                
+                // Send message with button
+                bot.sendMessage(chatId, message, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+            });
+            
+            // Send footer message
+            bot.sendMessage(chatId,
+                '_Используйте QR-коды для быстрого обмена контактами на конференциях_',
+                { parse_mode: 'Markdown' }
+            );
+        });
+    });
+}
+
+// Generate and send user's QR code
+function generateUserQrCode(chatId, telegramId) {
+    // First, get user information
+    db.get("SELECT id, full_name, qr_code_token FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err) {
+            console.error('Error fetching user for QR code:', err);
+            bot.sendMessage(chatId, '❌ Произошла ошибка при生成 QR-кода. Попробуйте еще раз.');
+            return;
+        }
+        
+        if (!user) {
+            bot.sendMessage(chatId, '❌ Пользователь не найден. Пожалуйста, зарегистрируйтесь сначала.');
+            return;
+        }
+        
+        console.log(`User found for QR: ${user.full_name}, existing token: ${user.qr_code_token}`);
+        
+        // Generate or retrieve QR code token
+        let qrToken = user.qr_code_token;
+        
+        if (!qrToken) {
+            // Generate a new unique token
+            qrToken = require('crypto').randomBytes(16).toString('hex');
+            console.log(`Generated new QR token: ${qrToken} for user: ${user.id}`);
+            
+            // Save the token to database
+            db.run("UPDATE users SET qr_code_token = ? WHERE id = ?", [qrToken, user.id], (err) => {
+                if (err) {
+                    console.error('Error saving QR token:', err);
+                    bot.sendMessage(chatId, '❌ Произошла ошибка при сохранении QR-кода. Попробуйте еще раз.');
+                    return;
+                }
+                
+                console.log(`QR token saved successfully for user: ${user.id}`);
+                // Now generate the QR code with the token
+                generateAndSendQrCode(chatId, qrToken, user.full_name);
+            });
+        } else {
+            console.log(`Using existing QR token: ${qrToken} for user: ${user.id}`);
+            // Use existing token
+            generateAndSendQrCode(chatId, qrToken, user.full_name);
+        }
+    });
+}
+
+// Helper function to generate QR code and send it
+function generateAndSendQrCode(chatId, token, fullName) {
+    // Get the bot info to ensure we have the correct username
+    bot.getMe().then(botInfo => {
+        const botUsername = botInfo.username;
+        const deepLinkUrl = `https://t.me/${botUsername}?start=${token}`;
+        
+        console.log(`Generating QR code with URL: ${deepLinkUrl}`);
+        
+        // Generate QR code with the URL as text
+        qrcode.toBuffer(deepLinkUrl, {
+            width: 300,
+            margin: 2,
+            color: {
+                dark: '#000000',
+                light: '#FFFFFF'
+            }
+        }, (err, buffer) => {
+            if (err) {
+                console.error('Error generating QR code:', err);
+                bot.sendMessage(chatId, '❌ Произошла ошибка при生成 QR-кода. Попробуйте еще раз.');
+                return;
+            }
+            
+            // Send the QR code image with the URL in the caption
+            bot.sendPhoto(chatId, buffer, {
+                caption: `🤝 *QR-код для обмена контактами*\n\n👤 *${fullName}*\n\n📷 *Другие пользователи могут отсканировать этот QR-код, чтобы добавить вас в контакты*\n\n🔗 *Ваша ссылка:*\n\`${deepLinkUrl}\`\n\n_Этот QR-код содержит вашу уникальную ссылку для быстрого обмена контактами на конференциях_`,
+                parse_mode: 'Markdown'
+            }).catch(error => {
+                console.error('Error sending QR code photo:', error);
+                bot.sendMessage(chatId, '❌ Произошла ошибка при отправке QR-кода. Попробуйте еще раз.');
+            });
+        });
+    }).catch(err => {
+        console.error('Error getting bot info:', err);
+        // Fallback to environment variable
+        const botUsername = process.env.BOT_USERNAME || 'partnerkin_super_bot';
+        const deepLinkUrl = `https://t.me/${botUsername}?start=${token}`;
+        
+        bot.sendMessage(chatId, `⚠️ Не удалось получить имя бота. Используется запасной вариант.\n\n🔗 Ваша ссылка: ${deepLinkUrl}`);
+    });
 }
 
 const testKeyboard = {
@@ -942,11 +1151,21 @@ bot.onText(/\/start(?: (.+))?/, (msg, match) => {
 
             if (startPayload) { // If there's a payload, it's a deep link
                 // Check if it's a QR code token
+                console.log(`Looking for user with QR token: ${startPayload}`);
                 db.get("SELECT id, telegram_id, full_name FROM users WHERE qr_code_token = ?", [startPayload], (err, manager) => {
-                    if (err || !manager) {
+                    if (err) {
+                        console.error('Error looking up QR token:', err);
+                        bot.sendMessage(chatId, '❌ Ошибка при поиске QR-кода. Попробуйте еще раз.');
+                        return;
+                    }
+                    
+                    if (!manager) {
+                        console.log(`No user found with QR token: ${startPayload}`);
                         bot.sendMessage(chatId, '❌ Неверный QR-код или коллега не найден.');
                         return;
                     }
+                    
+                    console.log(`Found user with QR token: ${manager.full_name} (ID: ${manager.telegram_id})`);
 
                     // If the scanner is the manager themselves, just show their QR again
                     if (manager.telegram_id === telegramId) {
@@ -1769,6 +1988,10 @@ function showEventDetails(chatId, telegramId, event) {
             }
         }
 
+        // Handle company info collection
+        else if (currentState && currentState.type === 'collect_company_info') {
+            handleCompanyInfoCollection(chatId, telegramId, text, currentState);
+        }
         // Обработка текстового ввода и состояний админа
         else {
             handleTextInput(chatId, telegramId, text, username);
@@ -5281,6 +5504,23 @@ bot.on('callback_query', (callbackQuery) => {
         } else if (data === 'generate_my_qr') {
             generateUserQrCode(chatId, telegramId);
             bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('add_company_info_')) {
+            const scannerId = data.split('_')[3];
+            
+            // Set state for collecting company info
+            global.userScreenshots[telegramId] = {
+                type: 'collect_company_info',
+                step: 'awaiting_company_name',
+                scannerId: scannerId
+            };
+            
+            bot.sendMessage(chatId,
+                '📝 *Добавление информации о контакте*\n\n' +
+                'Пожалуйста, введите название компании:',
+                { parse_mode: 'Markdown' }
+            );
+            
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
         }
     } catch (error) {
         console.error('❌ Callback query error:', error);
@@ -5488,6 +5728,13 @@ cron.schedule('*/15 * * * *', updateUserStatusesCron);
 
 console.log('🚀 Бот "Жизнь в Партнеркине" запускается...');console.log('🎯 Версия: Кнопочная 2.0');
 console.log('📋 Ctrl+C для остановки');
+
+// Remove bot commands menu completely (but /start will still work)
+bot.setMyCommands([]).then(() => {
+    console.log('✅ Меню команд бота полностью убрано');
+}).catch(err => {
+    console.error('❌ Ошибка при удалении команд меню:', err);
+});
 
 // Initialize task reminders from DB after a short delay
 setTimeout(initializeSchedules, 5000); // 5 second delay
@@ -7397,16 +7644,63 @@ function handleContactExchange(chatId, telegramId, contact, state) {
         db.get("SELECT id, full_name FROM users WHERE telegram_id = ?", [telegramId], (err, scanner) => {
             if (err || !scanner) {
                 console.error('Error getting scanner info:', err);
-                bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+                
+                // If user not found, create a new user record
+                if (!scanner && !err) {
+                    console.log('Creating new user record for scanner:', telegramId);
+                    const fullName = `${contact.first_name} ${contact.last_name || ''}`.trim();
+                    
+                    db.run("INSERT INTO users (telegram_id, username, full_name, role, is_registered) VALUES (?, ?, ?, ?, ?)",
+                           [telegramId, contact.username || '', fullName, 'старичок', 1],
+                           function(err) {
+                               if (err) {
+                                   console.error('Error creating new user:', err);
+                                   bot.sendMessage(chatId, '❌ Произошла ошибка при регистрации. Попробуйте снова.');
+                                   return;
+                               }
+                               
+                               // Retry getting scanner info after creating record
+                               db.get("SELECT id, full_name FROM users WHERE telegram_id = ?", [telegramId], (err, newScanner) => {
+                                   if (err || !newScanner) {
+                                       console.error('Error getting new scanner info:', err);
+                                       bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+                                       return;
+                                   }
+                                   
+                                   // Continue with the new scanner record
+                                   proceedWithContactExchange(chatId, telegramId, contact, state, newScanner);
+                               });
+                           });
+                } else {
+                    bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+                }
+                return;
+            }
+            
+            // Continue with existing scanner record
+            proceedWithContactExchange(chatId, telegramId, contact, state, scanner);
+        });
+    } catch (error) {
+        console.error('Error in handleContactExchange:', error);
+        bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+    }
+}
+
+// Helper function to continue with contact exchange after we have scanner info
+function proceedWithContactExchange(chatId, telegramId, contact, state, scanner) {
+    try {
+        // Get manager's user info
+        db.get("SELECT id, full_name, telegram_id, username FROM users WHERE id = ?", [state.managerId], (err, manager) => {
+            if (err || !manager) {
+                console.error('Error getting manager info:', err);
+                bot.sendMessage(chatId, '❌ Менеджер не найден. Попробуйте снова.');
                 return;
             }
 
-            // Get manager's user info
-            db.get("SELECT id, full_name, telegram_id FROM users WHERE id = ?", [state.managerId], (err, manager) => {
-                if (err || !manager) {
-                    console.error('Error getting manager info:', err);
-                    bot.sendMessage(chatId, '❌ Менеджер не найден. Попробуйте снова.');
-                    return;
+            // Get scanner's username
+            db.get("SELECT username FROM users WHERE id = ?", [scanner.id], (err, scannerInfo) => {
+                if (err) {
+                    console.error('Error getting scanner username:', err);
                 }
 
                 // Format contact info
@@ -7423,177 +7717,59 @@ function handleContactExchange(chatId, telegramId, contact, state) {
                         return;
                     }
 
+                    // Create inline keyboard for scanner with "Write to Manager" button
+                    const scannerKeyboard = {
+                        inline_keyboard: [[
+                            { text: '💬 Написать менеджеру', url: `https://t.me/${manager.username || `user${manager.telegram_id}`}` }
+                        ]]
+                    };
+
                     // Send confirmation to scanner
                     bot.sendMessage(chatId,
                         `✅ Ваш контакт успешно отправлен!\n\n` +
                         `Вы теперь можете связаться с ${manager.full_name}.\n\n` +
                         `📇 Ваши контакты с конфы доступны в меню "📇 Контакты с конфы"`,
-                        {
-                            reply_markup: {
-                                inline_keyboard: [[
-                                    { text: '💬 Написать менеджеру', url: `https://t.me/${manager.telegram_id}` }
-                                ]]
-                            }
-                        }
+                        { reply_markup: scannerKeyboard }
                     );
 
-                    // Notify manager about new contact
+                    // Set state for manager to collect company info
+                    global.userScreenshots[manager.telegram_id] = {
+                        type: 'collect_company_info',
+                        step: 'awaiting_company_name',
+                        scannerId: scanner.id,
+                        scannerName: `${contact.first_name} ${contact.last_name || ''}`.trim(),
+                        scannerPhone: contact.phone_number,
+                        scannerTelegramId: telegramId
+                    };
+
+                    // Send notification to manager with option to add company info
+                    const managerKeyboard = {
+                        inline_keyboard: [
+                            [
+                                { text: '💬 Написать', url: `https://t.me/${scannerInfo?.username || `user${telegramId}`}` }
+                            ],
+                            [
+                                { text: '📝 Добавить информацию о контакте', callback_data: `add_company_info_${scanner.id}` }
+                            ]
+                        ]
+                    };
+
                     bot.sendMessage(manager.telegram_id,
                         `🔔 Новый контакт с конференции!\n\n` +
                         `${scannerContactInfo}\n\n` +
-                        `Вы можете связаться с этим человеком через Telegram.`,
-                        {
-                            reply_markup: {
-                                inline_keyboard: [[
-                                    { text: '💬 Написать', url: `https://t.me/${telegramId}` }
-                                ]]
-                            }
-                        }
+                        `Вы можете связаться с этим человеком через Telegram или добавить дополнительную информацию о контакте.`,
+                        { reply_markup: managerKeyboard }
                     );
 
-                    // Clear the state
+                    // Clear the scanner's state
                     delete global.userScreenshots[telegramId];
                 });
             });
         });
     } catch (error) {
-        console.error('Error in handleContactExchange:', error);
+        console.error('Error in proceedWithContactExchange:', error);
         bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
     }
-}
-
-// Show contacts from conferences
-function showMyContacts(chatId, telegramId) {
-    try {
-        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
-            if (err || !user) {
-                bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
-                return;
-            }
-
-            // Get all contacts where user is either scanner or manager
-            db.all(`SELECT * FROM conference_contacts
-                    WHERE scanner_id = ? OR manager_id = ?
-                    ORDER BY exchange_date DESC`,
-                    [user.id, user.id], (err, contacts) => {
-                if (err) {
-                    console.error('Error loading conference contacts:', err);
-                    bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
-                    return;
-                }
-
-                if (!contacts || contacts.length === 0) {
-                    bot.sendMessage(chatId,
-                        '📇 Контакты с конфы\n\n' +
-                        'У вас пока нет контактов с конференций.\n\n' +
-                        'Отсканируйте QR-код коллеги на конференции, чтобы обменяться контактами!',
-                        qrContactsKeyboard).catch(console.error);
-                    return;
-                }
-
-                let contactsText = `📇 Ваши контакты с конференций 📋\n\n`;
-                contactsText += `📊 Всего контактов: ${contacts.length}\n\n`;
-
-                contacts.forEach((contact, index) => {
-                    const isScanner = contact.scanner_id === user.id;
-                    const otherContactInfo = isScanner ? contact.manager_contact : contact.scanner_contact;
-                    const exchangeDate = new Date(contact.exchange_date).toLocaleDateString('ru-RU');
-                    
-                    contactsText += `🤝 Контакт #${index + 1} (${exchangeDate})\n`;
-                    contactsText += `${otherContactInfo}\n`;
-                    contactsText += `${isScanner ? '👤 Вы сканировали' : '📤 Вы отправили контакт'}\n\n`;
-                });
-
-                // Split message if too long
-                if (contactsText.length > 4000) {
-                    const parts = [];
-                    let currentPart = `📇 Ваши контакты с конференций 📋\n\n📊 Всего контактов: ${contacts.length}\n\n`;
-                    
-                    contacts.forEach((contact, index) => {
-                        const isScanner = contact.scanner_id === user.id;
-                        const otherContactInfo = isScanner ? contact.manager_contact : contact.scanner_contact;
-                        const exchangeDate = new Date(contact.exchange_date).toLocaleDateString('ru-RU');
-                        
-                        const contactInfo = `🤝 Контакт #${index + 1} (${exchangeDate})\n${otherContactInfo}\n${isScanner ? '👤 Вы сканировали' : '📤 Вы отправили контакт'}\n\n`;
-                        
-                        if (currentPart.length + contactInfo.length > 4000) {
-                            parts.push(currentPart);
-                            currentPart = '';
-                        }
-                        currentPart += contactInfo;
-                    });
-                    
-                    if (currentPart) parts.push(currentPart);
-                    
-                    // Send parts sequentially
-                    parts.forEach((part, index) => {
-                        setTimeout(() => {
-                            bot.sendMessage(chatId, part).catch(console.error);
-                        }, index * 500);
-                    });
-                } else {
-                    bot.sendMessage(chatId, contactsText, qrContactsKeyboard).catch(console.error);
-                }
-            });
-        });
-    } catch (error) {
-        console.error('Error in showMyContacts:', error);
-        bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
-    }
-}
-
-function generateUserQrCode(chatId, telegramId) {
-    db.get("SELECT id, full_name, qr_code_token FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
-        if (err || !user) {
-            bot.sendMessage(chatId, '❌ Ошибка: не удалось найти ваш профиль.');
-            return;
-        }
-
-        let qrToken = user.qr_code_token;
-        if (!qrToken) {
-            // Generate a unique token
-            qrToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-            db.run("UPDATE users SET qr_code_token = ? WHERE id = ?", [qrToken, user.id], (err) => {
-                if (err) console.error('Error saving QR token:', err);
-            });
-        }
-
-        bot.getMe().then(botInfo => {
-            const deepLink = `https://t.me/${botInfo.username}?start=${qrToken}`;
-            const qrCodeFileName = `./temp_qr_${telegramId}.png`;
-
-            qrcode.toFile(qrCodeFileName, deepLink, {
-                errorCorrectionLevel: 'H',
-                width: 256
-            }, (err) => {
-            if (err) {
-                console.error('Error generating QR code:', err);
-                bot.sendMessage(chatId, '❌ Ошибка при генерации QR-кода.');
-                return;
-            }
-
-            bot.sendPhoto(chatId, qrCodeFileName, {
-                caption: `Ваш QR-код для конференций:\n\n` +
-                         `Покажите коллегам на конфе - они отсканируют и добавят вас в контакты.\n\n` +
-                         `Ссылка: ${deepLink}`
-            }).finally(() => {
-                // Clean up the generated QR code file
-                require('fs').unlink(qrCodeFileName, (err) => {
-                    if (err) console.error('Error deleting QR file:', err);
-                });
-            });
-        });
-        }); // close bot.getMe().then()
-    });
-}
-
-function generateWalletAddress() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let address = 'P';
-    for (let i = 0; i < 33; i++) {
-        address += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return address;
 }
 
 function showCurrentStatus(chatId, telegramId) {
@@ -8599,5 +8775,75 @@ function setVacationBalance(chatId, adminId, userTelegramId, days) {
         });
     } catch (error) {
         console.error('❌ Set vacation balance error:', error);
+    }
+}
+
+// Handle company info collection for conference contacts
+function handleCompanyInfoCollection(chatId, telegramId, text, state) {
+    try {
+        if (state.step === 'awaiting_company_name') {
+            // Save company name and ask for position
+            global.userScreenshots[telegramId].companyName = text;
+            global.userScreenshots[telegramId].step = 'awaiting_position';
+            
+            bot.sendMessage(chatId,
+                '📝 *Добавление информации о контакте*\n\n' +
+                'Отлично! Теперь введите должность контакта:',
+                { parse_mode: 'Markdown' }
+            );
+        } else if (state.step === 'awaiting_position') {
+            // Save position and ask for comment
+            global.userScreenshots[telegramId].position = text;
+            global.userScreenshots[telegramId].step = 'awaiting_comment';
+            
+            bot.sendMessage(chatId,
+                '📝 *Добавление информации о контакте*\n\n' +
+                'Хорошо! Теперь добавьте краткий комментарий (необязательно):',
+                { parse_mode: 'Markdown' }
+            );
+        } else if (state.step === 'awaiting_comment') {
+            // Save comment and update the contact record
+            const companyName = global.userScreenshots[telegramId].companyName;
+            const position = global.userScreenshots[telegramId].position;
+            const comment = text;
+            const scannerId = global.userScreenshots[telegramId].scannerId;
+            
+            // Update the conference_contacts record with company info
+            db.run(`UPDATE conference_contacts
+                    SET company_name = ?, position = ?, comment = ?
+                    WHERE scanner_id = ? AND manager_id = (SELECT id FROM users WHERE telegram_id = ?)`,
+                [companyName, position, comment, scannerId, telegramId], (err) => {
+                if (err) {
+                    console.error('Error updating company info:', err);
+                    bot.sendMessage(chatId, '❌ Произошла ошибка при сохранении информации.');
+                    return;
+                }
+                
+                // Get scanner info for confirmation
+                db.get("SELECT full_name FROM users WHERE id = ?", [scannerId], (err, scanner) => {
+                    if (err || !scanner) {
+                        console.error('Error getting scanner info:', err);
+                        bot.sendMessage(chatId, '✅ Информация сохранена!');
+                        return;
+                    }
+                    
+                    bot.sendMessage(chatId,
+                        `✅ *Информация о контакте сохранена!*\n\n` +
+                        `👤 Контакт: ${scanner.full_name}\n` +
+                        `🏢 Компания: ${companyName}\n` +
+                        `💼 Должность: ${position}\n` +
+                        `💬 Комментарий: ${comment}\n\n` +
+                        `Эта информация будет доступна в разделе "📇 Контакты с конфы"`,
+                        { parse_mode: 'Markdown' }
+                    );
+                });
+                
+                // Clear the state
+                delete global.userScreenshots[telegramId];
+            });
+        }
+    } catch (error) {
+        console.error('Error in handleCompanyInfoCollection:', error);
+        bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте еще раз.');
     }
 }
