@@ -2,29 +2,29 @@
   "name": "partnerkino-bot",
   "version": "1.0.0",
   "description": "",
-  "main": "app.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node app.js",
-    "migrate": "node migrate_to_postgres.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node start.js",
+    "bot": "node app.js",
+    "server": "node server.js",
+    "dev": "npm run server & npm run bot",
+    "production": "NODE_ENV=production node start.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:qr": "node test_qr_contact_sharing.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "canvas": "^3.2.0",
+    "chrono-node": "^2.9.0",
+    "csv-parse": "^6.1.0",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.66.0",
     "pdfkit": "^0.17.2",
-    "pg": "^8.16.3",
-    "sqlite3": "^5.1.7",
-    "validator": "^13.15.15"
-  },
-  "devDependencies": {
-    "mocha": "^11.7.4"
+    "qrcode": "^1.5.4",
+    "sqlite3": "^5.1.7"
   }
 }

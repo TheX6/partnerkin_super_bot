@@ -1,11 +1,47 @@
-// app.js - Бот "Жизнь в Партнеркино" - УЛУЧШЕННАЯ ВЕРСИЯ 🚀
+// app.js - Бот "Жизнь в Партнеркино" - ПРОДАКШН ВЕРСИЯ 🚀
 require('dotenv').config();
+
+// Production error handling
+process.on('uncaughtException', (error) => {
+    console.error('💥 Uncaught Exception:', error);
+    console.error('Stack:', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🛑 Received SIGTERM, shutting down gracefully');
+    if (bot) {
+        bot.stopPolling();
+    }
+    if (db) {
+        db.close();
+    }
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('🛑 Received SIGINT, shutting down gracefully');
+    if (bot) {
+        bot.stopPolling();
+    }
+    if (db) {
+        db.close();
+    }
+    process.exit(0);
+});
 const TelegramBot = require('node-telegram-bot-api');
+const sqlite3 = require('sqlite3').verbose();
 const config = require('./config');
-const db = require('./database');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
-const { createCanvas, loadImage } = require('canvas');
+const cron = require('node-cron');
+const chrono = require('chrono-node');
+const { parse } = require('csv-parse/sync');
+const qrcode = require('qrcode');
 
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
@@ -26,8 +62,489 @@ global.waitingForPoints = {};
 global.adminStates = {};
 global.userMenuContext = {};
 global.vacationStates = {};
+global.taskReminders = {};
 
-console.log('🚀 Подключение к базе данных установлено!');
+function scheduleTaskReminder(taskId, intervalMinutes, assigneeId, taskTitle) {
+    if (global.taskReminders[taskId]) {
+        console.log(`[SCHEDULER] Reminder for task ${taskId} already exists. Skipping.`);
+        return;
+    }
+
+    const cronPattern = `*/${intervalMinutes} * * * *`;
+    try {
+        const job = cron.schedule(cronPattern, () => {
+            db.get("SELECT telegram_id FROM users WHERE id = ?", [assigneeId], (err, user) => {
+                if (user) {
+                    bot.sendMessage(user.telegram_id, `⏰ Напоминание по задаче:\n**${taskTitle}**`, { parse_mode: 'Markdown' });
+                }
+            });
+        });
+        global.taskReminders[taskId] = job;
+        console.log(`[SCHEDULER] Scheduled reminder for task ${taskId} every ${intervalMinutes} minutes.`);
+    } catch (e) {
+        console.error(`[SCHEDULER] Error scheduling task ${taskId}:`, e);
+    }
+}
+
+function cancelTaskReminder(taskId) {
+    if (global.taskReminders[taskId]) {
+        global.taskReminders[taskId].stop();
+        delete global.taskReminders[taskId];
+        console.log(`[SCHEDULER] Cancelled reminder for task ${taskId}.`);
+    }
+}
+
+function initializeSchedules() {
+    console.log('[SCHEDULER] Initializing schedules for active tasks...');
+    db.all("SELECT id, reminder_interval_minutes, assignee_id, title FROM tasks WHERE status = 'in_progress' AND reminder_interval_minutes IS NOT NULL", (err, tasks) => {
+        if (err) {
+            console.error('[SCHEDULER] Error fetching tasks for schedule initialization:', err);
+            return;
+        }
+
+        if (tasks && tasks.length > 0) {
+            tasks.forEach(task => {
+                scheduleTaskReminder(task.id, task.reminder_interval_minutes, task.assignee_id, task.title);
+            });
+            console.log(`[SCHEDULER] Initialized ${tasks.length} task reminders.`);
+        } else {
+            console.log('[SCHEDULER] No active tasks with reminders to initialize.');
+        }
+    });
+}
+
+// База данных
+const db = new sqlite3.Database(config.DATABASE.name);
+
+// Создание таблиц
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        telegram_id INTEGER UNIQUE,
+        username TEXT,
+        full_name TEXT,
+        role TEXT DEFAULT 'новичок',
+        p_coins INTEGER DEFAULT 0,
+        company_points INTEGER DEFAULT 0,
+        energy INTEGER DEFAULT 100,
+        qr_code_token TEXT,
+        registration_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        contacts TEXT,
+        is_registered INTEGER DEFAULT 0,
+        position_level TEXT
+    )`);
+
+    // Добавляем поле position_level в существующую таблицу users (если оно не существует)
+    db.run(`ALTER TABLE users ADD COLUMN position_level TEXT`, (err) => {
+        // Игнорируем ошибку если поле уже существует
+        if (err && !err.message.includes('duplicate column name')) {
+            console.error('Error adding position_level column:', err);
+        }
+    });
+
+    db.run(`CREATE TABLE IF NOT EXISTS intern_progress (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        test_name TEXT,
+        completed INTEGER DEFAULT 0,
+        points_earned INTEGER DEFAULT 0,
+        completed_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+    
+    db.run(`CREATE TABLE IF NOT EXISTS test_submissions (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        telegram_id INTEGER,
+        username TEXT,
+        test_name TEXT,
+        points_claimed INTEGER,
+        photo_file_id TEXT,
+        status TEXT DEFAULT 'pending',
+        submitted_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        admin_id INTEGER,
+        reviewed_date DATETIME,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+    
+    db.run(`CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        telegram_id INTEGER,
+        granted_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+    
+    db.run(`CREATE TABLE IF NOT EXISTS battles (
+        id INTEGER PRIMARY KEY,
+        attacker_id INTEGER,
+        defender_id INTEGER,
+        winner_id INTEGER,
+        points_won INTEGER,
+        battle_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(attacker_id) REFERENCES users(id),
+        FOREIGN KEY(defender_id) REFERENCES users(id)
+    )`);
+    
+    db.run(`CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        item_name TEXT,
+        price INTEGER,
+        purchase_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+
+    // Тайм-слоты для мероприятий
+    db.run(`CREATE TABLE IF NOT EXISTS event_slots (
+        id INTEGER PRIMARY KEY,
+        event_name TEXT,
+        category TEXT,
+        date TEXT,
+        time TEXT,
+        location TEXT,
+        max_participants INTEGER DEFAULT 10,
+        current_participants INTEGER DEFAULT 0,
+        points_reward INTEGER DEFAULT 5,
+        status TEXT DEFAULT 'active',
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    
+    // Записи на мероприятия
+    db.run(`CREATE TABLE IF NOT EXISTS event_bookings (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        slot_id INTEGER,
+        booking_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        FOREIGN KEY(slot_id) REFERENCES event_slots(id)
+    )`);
+
+    // Подарки П-коинов
+    db.run(`CREATE TABLE IF NOT EXISTS gifts (
+        id INTEGER PRIMARY KEY,
+        sender_id INTEGER,
+        receiver_id INTEGER,
+        amount INTEGER,
+        message TEXT,
+        gift_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(sender_id) REFERENCES users(id),
+        FOREIGN KEY(receiver_id) REFERENCES users(id)
+    )`);
+
+    // Таблица заявок на отпуск
+    db.run(`CREATE TABLE IF NOT EXISTS vacation_requests (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        telegram_id INTEGER,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        vacation_type TEXT DEFAULT 'основной',
+        reason TEXT,
+        days_count INTEGER,
+        status TEXT DEFAULT 'pending',
+        requested_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        reviewed_date DATETIME,
+        reviewer_id INTEGER,
+        reviewer_comment TEXT,
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        FOREIGN KEY(reviewer_id) REFERENCES users(id)
+    )`);
+
+    // Таблица баланса отпусков пользователей
+    db.run(`CREATE TABLE IF NOT EXISTS vacation_balances (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        telegram_id INTEGER,
+        year INTEGER,
+        total_days INTEGER DEFAULT 28,
+        used_days INTEGER DEFAULT 0,
+        pending_days INTEGER DEFAULT 0,
+        remaining_days INTEGER DEFAULT 28,
+        last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(user_id, year)
+    )`);
+
+    // Система задач
+    db.run(`CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY,
+        creator_id INTEGER,
+        assignee_id INTEGER,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT DEFAULT 'pending',
+        priority TEXT DEFAULT 'medium',
+        reward_coins INTEGER DEFAULT 0,
+        reminder_interval_minutes INTEGER,
+        due_date DATETIME,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        started_at DATETIME,
+        completed_date DATETIME,
+        cancelled_reason TEXT,
+        postponed_until DATETIME,
+        last_action_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(creator_id) REFERENCES users(id),
+        FOREIGN KEY(assignee_id) REFERENCES users(id)
+    )`);
+
+    columnExists('tasks', 'started_at', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE tasks ADD COLUMN started_at DATETIME", (err) => {
+                if (err) console.log("ALTER tasks.started_at error:", err.message);
+            });
+        }
+    });
+
+    columnExists('tasks', 'reminder_interval_minutes', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE tasks ADD COLUMN reminder_interval_minutes INTEGER", (err) => {
+                if (err) console.log("ALTER tasks.reminder_interval_minutes error:", err.message);
+            });
+        }
+    });
+
+    // Инвойсы для продажников
+    db.run(`CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY,
+        creator_id INTEGER,
+        company_name TEXT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        quantity INTEGER DEFAULT 1,
+        description TEXT,
+        file_path TEXT,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(creator_id) REFERENCES users(id)
+    )`);
+
+    // Контакты компаний
+    db.run(`CREATE TABLE IF NOT EXISTS company_contacts (
+        id INTEGER PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        contact_name TEXT NOT NULL,
+        position TEXT,
+        email TEXT,
+        phone TEXT,
+        telegram TEXT,
+        notes TEXT,
+        added_by INTEGER,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(added_by) REFERENCES users(id)
+    )`);
+
+    // Контакты с конференций
+    db.run(`CREATE TABLE IF NOT EXISTS conference_contacts (
+        id INTEGER PRIMARY KEY,
+        scanner_id INTEGER NOT NULL,
+        manager_id INTEGER NOT NULL,
+        scanner_contact TEXT NOT NULL,
+        manager_contact TEXT NOT NULL,
+        exchange_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(scanner_id) REFERENCES users(id),
+        FOREIGN KEY(manager_id) REFERENCES users(id)
+    )`);
+
+    // Helper function to check if column exists
+    function columnExists(table, column, callback) {
+        db.all(`PRAGMA table_info(${table})`, (err, rows) => {
+            if (err) {
+                callback(false);
+                return;
+            }
+            const exists = rows.some(row => row.name === column);
+            callback(exists);
+        });
+    }
+
+    // Safe ALTERs for new fields
+    columnExists('invoices', 'work_type', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN work_type TEXT", (err) => {
+                if (err) console.log("ALTER work_type error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'org_address', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN org_address TEXT", (err) => {
+                if (err) console.log("ALTER org_address error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'invoice_number', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN invoice_number INTEGER", (err) => {
+                if (err) console.log("ALTER invoice_number error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'invoice_date', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN invoice_date DATE DEFAULT CURRENT_DATE", (err) => {
+                if (err) console.log("ALTER invoice_date error:", err.message);
+            });
+        }
+    });
+
+    // Добавляем поля для статуса сотрудников
+    columnExists('users', 'status', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'offline'", (err) => {
+                if (err) console.log("ALTER status error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'status_message', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN status_message TEXT", (err) => {
+                if (err) console.log("ALTER status_message error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'last_activity', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN last_activity DATETIME", (err) => {
+                if (err) {
+                    console.log("ALTER last_activity error:", err.message);
+                } else {
+                    // Устанавливаем текущее время для всех существующих пользователей
+                    db.run("UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE last_activity IS NULL");
+                }
+            });
+        }
+    });
+
+    columnExists('users', 'position', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN position TEXT", (err) => {
+                if (err) console.log("ALTER position error:", err.message);
+            });
+        }
+    });
+
+    columnExists('users', 'graduated_at', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN graduated_at DATETIME", (err) => {
+                if (err) console.log("ALTER graduated_at error:", err.message);
+            });
+        }
+    });
+
+    columnExists('users', 'wallet_address', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN wallet_address TEXT", (err) => {
+                if (err) console.log("ALTER wallet_address error:", err.message);
+            });
+        }
+    });
+
+    columnExists('users', 'position_level', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN position_level TEXT", (err) => {
+                if (err) console.log("ALTER position_level error:", err.message);
+            });
+        }
+    });
+
+    columnExists('users', 'company_points', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN company_points INTEGER DEFAULT 0", (err) => {
+                if (err) console.log("ALTER company_points error:", err.message);
+            });
+        }
+    });
+
+    columnExists('users', 'qr_code_token', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN qr_code_token TEXT", (err) => {
+                if (err) console.log("ALTER qr_code_token error:", err.message);
+            });
+        }
+    });
+
+    // Комментарии к задачам
+    db.run(`CREATE TABLE IF NOT EXISTS task_comments (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER,
+        user_id INTEGER,
+        comment TEXT NOT NULL,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(task_id) REFERENCES tasks(id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    // Система "Похвастаться"
+    db.run(`CREATE TABLE IF NOT EXISTS achievements (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        title TEXT NOT NULL,
+        description TEXT,
+        photo_file_id TEXT,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    // Лайки к достижениям
+    db.run(`CREATE TABLE IF NOT EXISTS achievement_likes (
+        id INTEGER PRIMARY KEY,
+        achievement_id INTEGER,
+        user_id INTEGER,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(achievement_id) REFERENCES achievements(id),
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(achievement_id, user_id)
+    )`);
+
+    // Комментарии к достижениям
+    db.run(`CREATE TABLE IF NOT EXISTS achievement_comments (
+        id INTEGER PRIMARY KEY,
+        achievement_id INTEGER,
+        user_id INTEGER,
+        comment TEXT NOT NULL,
+        created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(achievement_id) REFERENCES achievements(id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS bug_reports (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        description TEXT NOT NULL,
+        media_file_id TEXT,
+        media_type TEXT,
+        status TEXT DEFAULT 'pending',
+        submitted_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS exchange_history (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        p_coins_exchanged INTEGER,
+        company_points_received INTEGER,
+        exchange_rate REAL DEFAULT 10,
+        exchange_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS pcoin_requests (
+        id INTEGER PRIMARY KEY,
+        requester_id INTEGER,
+        target_id INTEGER,
+        amount INTEGER,
+        reason TEXT,
+        status TEXT DEFAULT 'pending', -- pending, approved, declined
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at DATETIME,
+        FOREIGN KEY(requester_id) REFERENCES users(id),
+        FOREIGN KEY(target_id) REFERENCES users(id)
+    )`);
+
+    console.log('🚀 База данных готова к работе!');
+});
 
 // ========== КЛАВИАТУРЫ ==========
 
@@ -42,7 +559,7 @@ const startKeyboard = {
 const internMenuKeyboard = {
     reply_markup: {
         keyboard: [
-            ['🎓 Пройти курсы'],
+            ['📚 Пройти тестирование'],
             ['💰 Мой баланс', '📊 Мой прогресс'],
             ['🔄 Главное меню']
         ],
@@ -55,7 +572,7 @@ const mainMenuKeyboard = {
         keyboard: [
             ['💰 Личное', '🎓 Обучение'],
             ['📋 Работа', '🎮 Развлечения'],
-            ['👤 Мой профиль']
+            ['👤 Мой профиль', '🐞 Сообщить о баге']
         ],
         resize_keyboard: true
     }
@@ -86,9 +603,9 @@ const learningKeyboard = {
 const workKeyboard = {
     reply_markup: {
         keyboard: [
-            ['📋 Мои задачи', '🎯 Мероприятия'],
+            ['📋 Задачи', '🎯 Мероприятия'],
             ['📄 Создать инвойс', '📇 Поиск контактов'],
-            ['👥 Сотрудники онлайн', '⚡ Мой статус'],
+            ['👥 Команда', '📱 Я на конфе'],
             ['🔙 В главное меню']
         ],
         resize_keyboard: true
@@ -99,18 +616,51 @@ const funKeyboard = {
     reply_markup: {
         keyboard: [
             ['⚔️ PVP Сражения', '🛒 Магазин'],
-            ['🎁 Подарить баллы', '🎉 Похвастаться'],
-            ['🔙 В главное меню'],  ['🖱️ Тапалка'],
+            ['👛 Мой кошелек', '🎉 Похвастаться'],
+            ['🔙 Назад в меню']
         ],
         resize_keyboard: true
     }
 };
 
+const teamKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['👥 Сотрудники онлайн', '⚡ Мой статус'],
+            ['🔙 Назад в меню']
+        ],
+        resize_keyboard: true
+    }
+};
+
+function showTeamMenu(chatId) {
+    bot.sendMessage(chatId, '👥 Раздел команды', teamKeyboard).catch(console.error);
+}
+
+const qrContactsKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📱 Мой QR-код', '🔍 Скан коллеги'],
+            ['➕ Добавить контакт', '📇 Контакты с конфы'],
+            ['🔙 Назад в работу']
+        ],
+        resize_keyboard: true
+    }
+};
+
+function showQrContactsMenu(chatId, telegramId) {
+    bot.sendMessage(chatId,
+        '📱 Я НА КОНФЕ 🤝\n\n' +
+        '✨ Быстрый обмен контактами на конференциях\n' +
+        '📋 Управляй своими рабочими контактами\n\n' +
+        '👇 Выбери действие:', qrContactsKeyboard).catch(console.error);
+}
+
 const testKeyboard = {
     reply_markup: {
         keyboard: [
-            ['🌟 Знакомство с компанией', '📈 Основы работы'],
-            ['🎯 Продуктовая линейка', '📊 Мой прогресс'],
+            ['Онбординг в Партнеркин', 'Основы эффективной коммуникации'],
+            ['Эффективная работа в режиме многозадачности', '📊 Мой прогресс'],
             ['🔙 Назад в меню']
         ],
         resize_keyboard: true
@@ -130,8 +680,8 @@ const pvpKeyboard = {
 const shopKeyboard = {
     reply_markup: {
         keyboard: [
-            ['🏖️ Выходной день (100 💰)', '👕 Мерч компании (50 💰)'],
-            ['🎁 Секретный сюрприз (200 💰)', '☕ Кофе в офис (25 💰)'],
+            ['🏖️ Выходной день (100 баллов)', '👕 Мерч компании (50 баллов)'],
+            ['🎁 Секретный сюрприз (200 баллов)', '☕ Кофе в офис (25 баллов)'],
             ['🔙 Назад в меню']
         ],
         resize_keyboard: true
@@ -141,8 +691,10 @@ const shopKeyboard = {
 const coursesKeyboard = {
     reply_markup: {
         keyboard: [
-            ['📊 Основы аналитики (+30 💰)', '💼 Менеджмент проектов (+40 💰)'],
-            ['🎯 Маркетинг и реклама (+35 💰)', '🔍 SEO оптимизация (+25 💰)'],
+            ['Информационный стиль и редактура текста (+100 💰)'],
+            ['Тайм-менеджмент (+100 💰)'],
+            ['Стресс-менеджмент (+100 💰)'],
+            ['Work-Life balance: профилактика эмоционального выгорания (+100 💰)'],
             ['🔙 Назад в меню']
         ],
         resize_keyboard: true
@@ -166,7 +718,7 @@ const adminKeyboard = {
             ['🗓️ Мероприятия', '📢 Рассылка'],
             ['👥 Пользователи', '📊 Статистика'],
             ['💰 Управление балансом', '🎉 Достижения'],
-            ['📇 Контакты'],
+            ['📇 Контакты', '🐞 Баги'],
             ['🔙 Выйти из админки']
         ],
         resize_keyboard: true
@@ -195,6 +747,7 @@ const adminUsersKeyboard = {
         resize_keyboard: true
     }
 };
+
 // Клавиатуры для системы отпусков
 const vacationKeyboard = {
     reply_markup: {
@@ -210,13 +763,60 @@ const vacationKeyboard = {
 const adminVacationKeyboard = {
     reply_markup: {
         keyboard: [
-            ['📋 Заявки на отпуск', '📅 Календарь команды'],
+            ['✅ Одобрить заявку', '❌ Отклонить заявку'],
+            ['📋 Все заявки', '📅 Календарь команды'],
             ['👥 Балансы сотрудников', '📊 Статистика отпусков'],
             ['🔙 В управление пользователями']
         ],
         resize_keyboard: true
     }
 };
+
+const vacationDurationKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['7️⃣ 7 дней', '📅 14 дней', '🗓️ 28 дней'],
+            ['✏️ Другое (указать дату окончания)'],
+            ['❌ Отмена']
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: true
+    }
+};
+
+const taskCreationTypeKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📝 Создать свою задачу'],
+            ['📁 Выбрать из шаблонов'],
+            ['🔙 Назад к задачам']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const taskTemplatesKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['Отправить пост редактору'],
+            ['🔙 Назад']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const positionLevelKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['Middle', 'Head'],
+            ['Senior', 'C-Level'],
+            ['🔙 Назад']
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: true
+    }
+};
+
 
 const tasksKeyboard = {
     reply_markup: {
@@ -265,8 +865,8 @@ const taskPriorityKeyboard = {
 const taskRewardKeyboard = {
     reply_markup: {
         keyboard: [
-            ['0 коинов', '5 коинов', '10 коинов'],
-            ['15 коинов', '20 коинов', '25 коинов'],
+            ['0 коинов', '50 коинов', '100 коинов'],
+            ['150 коинов', '200 коинов', '250 коинов'],
             ['❌ Отмена']
         ],
         resize_keyboard: true
@@ -310,10 +910,11 @@ const eventCategoryKeyboard = {
 
 // ========== ОСНОВНЫЕ КОМАНДЫ ==========
 
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start(?: (.+))?/, (msg, match) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id;
-        const username = msg.from.username || 'user';
+    const username = msg.from.username || 'user';
+    const startPayload = match ? match[1] : null; // Get the payload
 
     // [START LOG] Логирование команды /start
     const currentTime = new Date().toLocaleString('ru-RU');
@@ -338,13 +939,52 @@ bot.onText(/\/start/, (msg) => {
                 console.log('❌ DB Error:', err);
                 return;
             }
-            
-            if (user && user.is_registered === 1) {
+
+            if (startPayload) { // If there's a payload, it's a deep link
+                // Check if it's a QR code token
+                db.get("SELECT id, telegram_id, full_name FROM users WHERE qr_code_token = ?", [startPayload], (err, manager) => {
+                    if (err || !manager) {
+                        bot.sendMessage(chatId, '❌ Неверный QR-код или коллега не найден.');
+                        return;
+                    }
+
+                    // If the scanner is the manager themselves, just show their QR again
+                    if (manager.telegram_id === telegramId) {
+                        bot.sendMessage(chatId, 'Вы отсканировали свой собственный QR-код. Покажите его коллегам:', {
+                            reply_markup: {
+                                inline_keyboard: [[{ text: '🤝 Мой QR-код', callback_data: 'generate_my_qr' }]]
+                            }
+                        });
+                        return;
+                    }
+
+                    // Set state for the new contact (scanner)
+                    global.userScreenshots[telegramId] = {
+                        type: 'contact_exchange',
+                        step: 'awaiting_contact_share',
+                        managerId: manager.id,
+                        managerTelegramId: manager.telegram_id,
+                        managerFullName: manager.full_name
+                    };
+
+                    const message = `Здравствуйте! Вы хотите связаться с **${manager.full_name}** из "Partnerkin.com".\n\n` +
+                                    `Нажмите кнопку ниже, чтобы поделиться вашими контактными данными и начать общение.`;
+
+                    const keyboard = {
+                        keyboard: [[{ text: '📲 Отправить мой контакт', request_contact: true }]],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    };
+
+                    bot.sendMessage(chatId, message, { parse_mode: 'Markdown', reply_markup: keyboard });
+                });
+            } else if (user && user.is_registered === 1) {
                 showMainMenu(chatId, user);
             } else {
                 bot.sendMessage(chatId,
-                    '🎉 Добро пожаловать в "Жизнь в Партнеркино"! 🚀\n\n' +
-                    '💫 Кто ты в нашей команде? 👇',
+                    'Привет! Я — корпоративный бот «Жизнь в Партнеркине». 🚀\n\n' +
+                    'Я был создан, чтобы сделать нашу рабочую жизнь интереснее и проще. Здесь ты сможешь выполнять задачи, записываться на мероприятия, соревноваться с коллегами в рейтинге, зарабатывать П-коины и обменивать их на реальные «баллы» для получения бонусов!\n\n' +
+                    'Для начала, давай познакомимся. Кто ты в нашей команде? 👇',
                     startKeyboard).catch(console.error);
             }
         });
@@ -362,9 +1002,89 @@ bot.on('message', (msg) => {
         const telegramId = msg.from.id;
         const username = msg.from.username || 'user';
 
-                // [USER ACTION LOG] Подробное логирование действий пользователя
+        // [USER ACTION LOG] Подробное логирование действий пользователя
         const currentState = global.userScreenshots[telegramId];
         const currentTime = new Date().toLocaleString('ru-RU');
+
+        if (msg.document && currentState && currentState.type === 'import_contacts' && currentState.step === 'awaiting_file') {
+            const fileId = msg.document.file_id;
+            const mimeType = msg.document.mime_type;
+
+            if (mimeType !== 'text/csv' && mimeType !== 'text/plain' && mimeType !== 'application/vnd.ms-excel') {
+                bot.sendMessage(chatId, '❌ Неверный формат файла. Пожалуйста, загрузите файл в формате CSV.');
+                return;
+            }
+
+            bot.sendMessage(chatId, '⏳ Файл получен. Начинаю обработку...');
+
+            bot.getFile(fileId).then((fileInfo) => {
+                const fileUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+                
+                require('request')(fileUrl, (error, response, body) => {
+                    if (error || response.statusCode !== 200) {
+                        bot.sendMessage(chatId, '❌ Ошибка загрузки файла с серверов Telegram.');
+                        console.error('File download error:', error);
+                        return;
+                    }
+
+                    try {
+                        const records = parse(body, {
+                            skip_empty_lines: true
+                        });
+
+                        if (records.length === 0) {
+                            bot.sendMessage(chatId, '⚠️ Файл пуст или имеет неверный формат.');
+                            return;
+                        }
+
+                        const stmt = db.prepare(`INSERT INTO company_contacts 
+                            (company_name, contact_name, position, email, phone, telegram, notes, added_by) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+                        
+                        let successCount = 0;
+                        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, adminUser) => {
+                            if (err || !adminUser) {
+                                bot.sendMessage(chatId, '❌ Ошибка идентификации администратора.');
+                                return;
+                            }
+
+                            records.forEach(record => {
+                                const [
+                                    company_name = null, 
+                                    contact_name = null, 
+                                    position = null, 
+                                    email = null, 
+                                    phone = null, 
+                                    telegram = null, 
+                                    notes = null
+                                ] = record;
+
+                                if (company_name && contact_name) { // Basic validation
+                                    stmt.run(company_name, contact_name, position, email, phone, telegram, notes, adminUser.id);
+                                    successCount++;
+                                }
+                            });
+
+                            stmt.finalize((err) => {
+                                if (err) {
+                                    bot.sendMessage(chatId, `❌ Произошла ошибка при записи в базу данных: ${err.message}`);
+                                } else {
+                                    bot.sendMessage(chatId, `✅ Импорт завершен!\n\n- Обработано строк: ${records.length}\n- Успешно добавлено контактов: ${successCount}`);
+                                }
+                                delete global.userScreenshots[telegramId];
+                            });
+                        });
+
+                    } catch (e) {
+                        bot.sendMessage(chatId, `❌ Ошибка обработки CSV файла: ${e.message}`);
+                        console.error('CSV parsing error:', e);
+                        delete global.userScreenshots[telegramId];
+                    }
+                });
+            });
+            return;
+        }
+
 
         db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
@@ -378,58 +1098,7 @@ bot.on('message', (msg) => {
         // Автоматическое обновление активности пользователя
         updateUserActivity(telegramId);
 
-        // Обработка команд достижений
-        if (text && text.startsWith('/like_')) {
-            const achievementId = parseInt(text.replace('/like_', ''));
-            handleLikeAchievement(chatId, telegramId, achievementId);
-            return;
-        }
 
-        if (text && text.startsWith('/comment_')) {
-            const achievementId = parseInt(text.replace('/comment_', ''));
-            startCommentAchievement(chatId, telegramId, achievementId);
-            return;
-        }
-
-        if (text === '/clicker') {
-            const miniAppUrl = 'https://partnerkino-clicker.onrender.com';
-            bot.sendMessage(chatId, '🎮 Запускаю тапалку!', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '💥 Открыть тапалку', web_app: { url: miniAppUrl } }
-                    ]]
-                }
-            });
-            return;
-        }
-
-        // Test certificate generation for admins
-        if (text === '/test_cert') {
-            db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
-                if (!admin) {
-                    bot.sendMessage(chatId, '❌ Доступ запрещен! Только для администраторов.').catch(console.error);
-                    return;
-                }
-                const userName = "Тестовый Пользователь";
-                const courseName = "Тестовый Курс";
-                const completionDate = new Date().toLocaleDateString('ru-RU');
-                generateCertificate(userName, courseName, completionDate).then(certificateBuffer => {
-                    bot.sendPhoto(chatId, certificateBuffer, {
-                        caption: `🎉 Тестовый сертификат!\n\n👤 ${userName}\n📚 ${courseName}\n📅 ${completionDate}`
-                    }).catch(console.error);
-                }).catch(error => {
-                    console.error('❌ Test certificate generation error:', error);
-                    bot.sendMessage(chatId, '❌ Ошибка генерации тестового сертификата!').catch(console.error);
-                });
-            });
-            return;
-        }
-
-        // Reset stats command for admins
-        if (text === '/reset_stats') {
-            handleResetStats(chatId, telegramId);
-            return;
-        }
 
         if (text && text.startsWith('/')) return;
         
@@ -442,18 +1111,63 @@ bot.on('message', (msg) => {
             return;
         }
 
-        // Обработка скриншотов
-        if (msg.photo) {
-                        // [PHOTO LOG] Логирование отправки фото
-            const currentTime = new Date().toLocaleString('ru-RU');
-            db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
-                const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
-                console.log(`\n📸 [${currentTime}] PHOTO UPLOADED:`);
-                console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
-                console.log(`🏷️ Context: ${currentState ? currentState.type : 'none'}`);
-                console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            });
-            handleScreenshot(chatId, telegramId, msg.photo[msg.photo.length - 1].file_id, username);
+        if (msg.photo || msg.video) {
+            const state = global.userScreenshots[telegramId];
+            if (state && state.type === 'bug_report' && state.step === 'send_media') {
+                const media_file_id = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.video.file_id;
+                const media_type = msg.photo ? 'photo' : 'video';
+
+                db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                    if (err || !user) {
+                        bot.sendMessage(chatId, '❌ Ошибка пользователя!');
+                        return;
+                    }
+
+                    db.run(`INSERT INTO bug_reports (user_id, description, media_file_id, media_type)
+                            VALUES (?, ?, ?, ?)`,
+                           [user.id, state.description, media_file_id, media_type], function() {
+                        
+                        bot.sendMessage(chatId, '✅ Спасибо! Ваш отчет о баге отправлен на рассмотрение.');
+                        
+                        notifyAdminsOfBugReport(user, state.description, this.lastID);
+
+                        delete global.userScreenshots[telegramId];
+                    });
+                });
+                return;
+            }
+
+            if (state && state.type === 'task_from_template' && state.step === 'send_post') {
+                state.taskData.description = msg.caption || '';
+                if (msg.photo) {
+                    state.taskData.media = msg.photo[msg.photo.length - 1].file_id;
+                    state.taskData.media_type = 'photo';
+                } else if (msg.video) {
+                    state.taskData.media = msg.video.file_id;
+                    state.taskData.media_type = 'video';
+                }
+                state.step = 'enter_due_date';
+                bot.sendMessage(chatId, '✅ Пост получен. Укажите дату и, если нужно, время выполнения задачи (например, 25.12.2024 15:00). Для отмены напишите "отмена".');
+                return;
+            }
+
+            if (msg.photo) {
+                const currentTime = new Date().toLocaleString('ru-RU');
+                db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                    const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
+                    console.log(`\n📸 [${currentTime}] PHOTO UPLOADED:`);
+                    console.log(`👤 User: ${userInfo} (ID: ${telegramId})`);
+                    console.log(`🏷️ Context: ${state ? state.type : 'none'}`);
+                    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                });
+                handleScreenshot(chatId, telegramId, msg.photo[msg.photo.length - 1].file_id, username);
+            }
+            return;
+        }
+        
+        // Handle contact sharing for QR code exchange
+        if (msg.contact && currentState && currentState.type === 'contact_exchange' && currentState.step === 'awaiting_contact_share') {
+            handleContactExchange(chatId, telegramId, msg.contact, currentState);
             return;
         }
         
@@ -467,9 +1181,30 @@ bot.on('message', (msg) => {
         // РЕГИСТРАЦИЯ
         if (text === '👶 Я стажер') {
             registerUser(chatId, telegramId, username, 'стажер');
+            return;
         } 
         if (text === '🧓 Я старичок') {
             registerUser(chatId, telegramId, username, 'старичок');
+            return;
+        }
+
+        if (text === '🔙 Назад к выбору роли') {
+            const currentState = global.userScreenshots[telegramId];
+            if (currentState && currentState.type === 'registration' && currentState.step === 'enter_name') {
+                delete global.userScreenshots[telegramId];
+                db.run("DELETE FROM users WHERE telegram_id = ?", [telegramId], (err) => {
+                    if (err) {
+                        console.error('Error deleting user on registration back:', err);
+                        bot.sendMessage(chatId, 'Произошла ошибка. Попробуйте /start');
+                        return;
+                    }
+                    bot.sendMessage(chatId,
+                        '🎉 Добро пожаловать в "Жизнь в Партнеркине"! 🚀\n\n' +
+                        '💫 Кто ты в нашей команде? 👇',
+                        startKeyboard).catch(console.error);
+                });
+            }
+            return;
         }
         
         // ВХОД В АДМИНКУ
@@ -626,6 +1361,11 @@ function showEventDetails(chatId, telegramId, event) {
          }
          if (text === '📇 Контакты') {
              showContactsAdmin(chatId, telegramId);
+         } else if (text === '📥 Импорт CSV') {
+             startCsvImport(chatId, telegramId);
+             return;
+         } else if (text === '🐞 Баги') {
+             showBugReports(chatId, telegramId);
          }
          if (text === '🔙 Назад в админку') {
              backToAdminMenu(chatId, telegramId);
@@ -705,11 +1445,32 @@ function showEventDetails(chatId, telegramId, event) {
         } else if (text === '📇 Поиск контактов') {
             startContactSearch(chatId, telegramId);
             return;
+        } else if (text === '👥 Команда') {
+            showTeamMenu(chatId);
+            return;
+        } else if (text === '📱 Я на конфе') {
+            showQrContactsMenu(chatId, telegramId);
+            return;
+        } else if (text === '➕ Добавить контакт') {
+            startAddContact(chatId, telegramId);
+            return;
         } else if (text === '👥 Сотрудники онлайн') {
             showEmployeesOnline(chatId, telegramId);
             return;
         } else if (text === '⚡ Мой статус') {
             showStatusMenu(chatId, telegramId);
+            return;
+        } else if (text === '📱 Мой QR-код') {
+            generateUserQrCode(chatId, telegramId);
+            return;
+        } else if (text === '🔍 Скан коллеги') {
+            bot.sendMessage(chatId, '📷 Отправьте QR-код коллеги для сканирования', qrContactsKeyboard);
+            return;
+        } else if (text === '📇 Контакты с конфы') {
+            showMyContacts(chatId, telegramId);
+            return;
+        } else if (text === '🔙 Назад в работу') {
+            showWorkMenu(chatId, telegramId);
             return;
         } else if (text === '🎮 Развлечения') {
             showFunMenu(chatId);
@@ -726,7 +1487,11 @@ function showEventDetails(chatId, telegramId, event) {
             showAdminStats(chatId, telegramId);
         } else if (text === '🏖️ Управление отпусками') {
             showAdminVacationMenu(chatId, telegramId);
-        } else if (text === '📋 Заявки на отпуск') {
+        } else if (text === '✅ Одобрить заявку') {
+            showPendingVacationRequestsForApproval(chatId);
+        } else if (text === '❌ Отклонить заявку') {
+            showPendingVacationRequestsForRejection(chatId);
+        } else if (text === '📋 Все заявки') {
             showAdminVacationRequests(chatId, telegramId);
         } else if (text === '📅 Календарь команды') {
             showTeamVacationCalendar(chatId, telegramId);
@@ -749,8 +1514,8 @@ function showEventDetails(chatId, telegramId, event) {
         if (text === '🏖️ Отпуски') {
             showVacationMenu(chatId, telegramId);
         }
-        if (text === '🎓 Пройти курсы') {
-            showCoursesMenu(chatId);
+        if (text === '📚 Пройти тестирование') {
+            showTestMenu(chatId);
         }
         if (text === '📊 Мой прогресс') {
             showInternProgress(chatId, telegramId);
@@ -764,6 +1529,9 @@ function showEventDetails(chatId, telegramId, event) {
             console.log(`[NAV DEBUG] Profile button pressed for user ${telegramId}`);
             backToMainMenu(chatId, telegramId);
             return;
+        } else if (text === '🐞 Сообщить о баге') {
+            startBugReport(chatId, telegramId);
+            return;
         } else if (text === '🔙 Назад в меню') {
             console.log(`[NAV DEBUG] Back to menu button pressed for user ${telegramId}, context: ${JSON.stringify(global.userMenuContext[chatId] || 'none')}`);
             handleBackNavigation(chatId, telegramId);
@@ -771,14 +1539,14 @@ function showEventDetails(chatId, telegramId, event) {
         }
         
         // ========== ТЕСТЫ ДЛЯ СТАЖЕРОВ ==========
-        if (text === '🌟 Знакомство с компанией') {
-            selectTest(chatId, telegramId, 'Знакомство с компанией', 10);
+        if (text === 'Онбординг в Партнеркин') {
+            selectTest(chatId, telegramId, 'Онбординг в Партнеркин', 150, 'https://partnerkin.com/courses/onboarding');
         }
-        if (text === '📈 Основы работы') {
-            selectTest(chatId, telegramId, 'Основы работы', 15);
+        if (text === 'Основы эффективной коммуникации') {
+            selectTest(chatId, telegramId, 'Основы эффективной коммуникации', 150, 'https://partnerkin.com/courses/communication');
         }
-        if (text === '🎯 Продуктовая линейка') {
-            selectTest(chatId, telegramId, 'Продуктовая линейка', 15);
+        if (text === 'Эффективная работа в режиме многозадачности') {
+            selectTest(chatId, telegramId, 'Эффективная работа в режиме многозадачности', 100, 'https://partnerkin.com/courses/multitasking');
         }
 
         // ========== ФУНКЦИИ ДЛЯ СТАРИЧКОВ ==========
@@ -794,27 +1562,18 @@ function showEventDetails(chatId, telegramId, event) {
         if (text === '🎯 Мероприятия') {
             showEventsMenu(chatId);
         }
-        if (text === '📋 Мои задачи') {
+        if (text === '📋 Задачи') {
             showTasksMenu(chatId, telegramId);
         }
-        if (text === '🎁 Подарить баллы') {
-            startGiftProcess(chatId, telegramId);
+
+        if (text === '👛 Мой кошелек') {
+            showWallet(chatId, telegramId);
             return;
         }
         if (text === '🏆 Рейтинг') {
             showRating(chatId, telegramId);
         }
-        if (text === '🖱️ Тапалка') {
-            const miniAppUrl = 'https://partnerkino-clicker.onrender.com';
-            bot.sendMessage(chatId, '🎮 Запускаю тапалку!', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '💥 Открыть тапалку', web_app: { url: miniAppUrl } } // ← ПРАВИЛЬНО!
-                    ]]
-                }
-            });
-            return;
-        }
+
         // ========== СИСТЕМА ОТПУСКОВ ==========
         if (text === '📝 Подать заявку') {
             startVacationRequest(chatId, telegramId);
@@ -845,17 +1604,17 @@ function showEventDetails(chatId, telegramId, event) {
         }
         
         // ========== КУРСЫ ==========
-        else if (text.includes('📊 Основы аналитики')) {
-            selectCourse(chatId, telegramId, 'Основы аналитики', 30);
+        else if (text.includes('Информационный стиль и редактура текста')) {
+            selectCourse(chatId, telegramId, 'Информационный стиль и редактура текста', 100, 'https://partnerkin.com/courses/infostyle');
         }
-        else if (text.includes('💼 Менеджмент проектов')) {
-            selectCourse(chatId, telegramId, 'Менеджмент проектов', 40);
+        else if (text.includes('Тайм-менеджмент')) {
+            selectCourse(chatId, telegramId, 'Тайм-менеджмент', 100, 'https://partnerkin.com/courses/TM');
         }
-        else if (text.includes('🎯 Маркетинг и реклама')) {
-            selectCourse(chatId, telegramId, 'Маркетинг и реклама', 35);
+        else if (text.includes('Стресс-менеджмент')) {
+            selectCourse(chatId, telegramId, 'Стресс-менеджмент', 100, 'https://partnerkin.com/courses/stressmanagement');
         }
-        else if (text.includes('🔍 SEO оптимизация')) {
-            selectCourse(chatId, telegramId, 'SEO оптимизация', 25);
+        else if (text.includes('Work-Life balance: профилактика эмоционального выгорания')) {
+            selectCourse(chatId, telegramId, 'Work-Life balance: профилактика эмоционального выгорания', 100, 'https://partnerkin.com/courses/burnout');
         }
         
         // ========== МАГАЗИН ==========
@@ -884,6 +1643,7 @@ function showEventDetails(chatId, telegramId, event) {
                     showEventSlots(chatId, telegramId, 'Зарядка');
                 }
             });
+            return;
         }
         else if (text === '🎰 Покер' || text === 'Покер') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
@@ -893,6 +1653,7 @@ function showEventDetails(chatId, telegramId, event) {
                     showEventSlots(chatId, telegramId, 'Покер');
                 }
             });
+            return;
         }
         else if (text === '🎉 Корпоратив' || text === 'Корпоратив') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
@@ -902,6 +1663,7 @@ function showEventDetails(chatId, telegramId, event) {
                     showEventSlots(chatId, telegramId, 'Корпоратив');
                 }
             });
+            return;
         }
         else if (text === '📚 Тренинги' || text === 'Тренинги') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
@@ -911,6 +1673,7 @@ function showEventDetails(chatId, telegramId, event) {
                     showEventSlots(chatId, telegramId, 'Тренинги');
                 }
             });
+            return;
         }
         // REMOVED DUPLICATE HANDLER FOR '📅 Все мероприятия' - handled in first block to prevent duplicates
 
@@ -936,7 +1699,20 @@ function showEventDetails(chatId, telegramId, event) {
             showCompletedTasks(chatId, telegramId);
         }
         if (text === '🎯 Создать задачу') {
+            bot.sendMessage(chatId, 'Как вы хотите создать задачу?', taskCreationTypeKeyboard).catch(console.error);
+        }
+        if (text === '📝 Создать свою задачу') {
             startTaskCreation(chatId, telegramId);
+        }
+        if (text === '📁 Выбрать из шаблонов') {
+            global.userScreenshots[telegramId] = {
+                type: 'task_from_template',
+                step: 'select_template'
+            };
+            bot.sendMessage(chatId, 'Выберите шаблон задачи:', taskTemplatesKeyboard).catch(console.error);
+        }
+        if (text === '🔙 Назад к задачам') {
+            showTasksMenu(chatId, telegramId);
         }
         if (text === '👥 Задачи команды') {
             showTeamTasks(chatId, telegramId);
@@ -976,9 +1752,11 @@ function showEventDetails(chatId, telegramId, event) {
         // ========== СОЗДАНИЕ ЗАДАЧ (КНОПКИ) ==========
         else if (text === '🔴 Высокий' || text === '🟡 Средний' || text === '🟢 Низкий') {
             setTaskPriority(chatId, telegramId, text);
+            return;
         }
         else if (text.includes('коинов') && text !== '🔙 Назад в меню') {
             setTaskReward(chatId, telegramId, text);
+            return;
         }
 
         // /cancel handler
@@ -1006,38 +1784,43 @@ function showEventDetails(chatId, telegramId, event) {
 
 function registerUser(chatId, telegramId, username, role) {
     try {
-        const initialCoins = role === 'стажер' ? 0 : 50;
-        
-        db.run(`INSERT INTO users (telegram_id, username, role, p_coins, energy, is_registered) 
-                VALUES (?, ?, ?, ?, 100, 0)`, 
+        const initialCoins = role === 'стажер' ? 0 : 400;
+
+        db.run(`INSERT OR REPLACE INTO users (telegram_id, username, role, p_coins, energy, is_registered)
+                VALUES (?, ?, ?, ?, 100, 0)`,
                [telegramId, username, role, initialCoins], () => {
 
-            // Устанавливаем состояние ожидания данных пользователя
             global.userScreenshots[telegramId] = {
                 type: 'registration',
-                step: 'waiting_for_data',
-                role: role
+                step: 'enter_name',
+                role: role,
+                data: {}
             };
-            
-            const message = role === 'стажер' ? 
-                '🎉 Добро пожаловать в команду, стажер! 👋\n\n' +
-                '📝 Расскажи немного о себе:\n' +
-                '• Как зовут? 🤔\n' +
-                '• Как попал к нам? 🚀\n' +
-                '• Что ожидаешь от работы? 💫\n\n' +
-                '✏️ Напиши все в одном сообщении:' :
-                '🎉 Добро пожаловать в команду! 👋\n\n' +
-                '📋 Укажи свои данные:\n' +
-                '• ФИО 👤\n' +
-                '• Должность 💼\n' +
-                '• Телефон 📱\n\n' +
-                '✏️ Напиши все в одном сообщении:';
-                
-            bot.sendMessage(chatId, message).catch(console.error);
+
+            const backToRoleKeyboard = {
+                reply_markup: {
+                    keyboard: [['🔙 Назад к выбору роли']],
+                    resize_keyboard: true,
+                    one_time_keyboard: true
+                }
+            };
+
+            bot.sendMessage(chatId, '🎉 Добро пожаловать в команду! 👋\n\n📝 Давай познакомимся поближе. Как тебя зовут?', backToRoleKeyboard).catch(console.error);
         });
     } catch (error) {
         console.error('❌ Register user error:', error);
     }
+}
+
+function startBugReport(chatId, telegramId) {
+    global.userScreenshots[telegramId] = {
+        type: 'bug_report',
+        step: 'enter_description'
+    };
+    bot.sendMessage(chatId, 
+        'Если вы нашли баг, мы проверим и исправим его, а вы получите баллы. 🐞\n\n' +
+        'Пожалуйста, подробно опишите баг:'
+    );
 }
 
 function handleTextInput(chatId, telegramId, text, username) {
@@ -1059,37 +1842,224 @@ function handleTextInput(chatId, telegramId, text, username) {
     }
     
     try {
+        if (currentState && currentState.type === 'pcoin_transfer') {
+            switch (currentState.step) {
+                case 'enter_wallet_address': {
+                    const address = text.trim();
+                    db.get("SELECT * FROM users WHERE wallet_address = ?", [address], (err, recipient) => {
+                        if (err || !recipient) {
+                            bot.sendMessage(chatId, '❌ Кошелек не найден. Проверьте адрес и попробуйте еще раз.');
+                            return;
+                        }
+                        if (recipient.telegram_id === telegramId) {
+                            bot.sendMessage(chatId, '❌ Нельзя отправить П-коины самому себе.');
+                            return;
+                        }
+
+                        currentState.recipient = recipient;
+                        currentState.step = 'enter_amount';
+                        bot.sendMessage(chatId, `✅ Получатель найден: ${getUserDisplayName(recipient)}\n\nВведите сумму для перевода:`);
+                    });
+                    break;
+                }
+                case 'enter_amount': {
+                    const amount = parseInt(text);
+                    if (isNaN(amount) || amount <= 0) {
+                        bot.sendMessage(chatId, '❌ Введите корректную сумму (положительное число).');
+                        return;
+                    }
+
+                    db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, sender) => {
+                        if (err || !sender || sender.p_coins < amount) {
+                            bot.sendMessage(chatId, '❌ Недостаточно П-коинов для перевода.');
+                            return;
+                        }
+
+                        const recipient = currentState.recipient;
+
+                        // Perform transfer
+                        db.run("UPDATE users SET p_coins = p_coins - ? WHERE id = ?", [amount, sender.id]);
+                        db.run("UPDATE users SET p_coins = p_coins + ? WHERE id = ?", [amount, recipient.id]);
+
+                        // Notify sender and receiver
+                        bot.sendMessage(chatId, `✅ Вы успешно отправили ${amount} П-коинов пользователю ${getUserDisplayName(recipient)}.`);
+                        bot.sendMessage(recipient.telegram_id, `🎉 Вы получили ${amount} П-коинов от пользователя ${getUserDisplayName(sender)}!`);
+
+                        delete global.userScreenshots[telegramId];
+                    });
+                    break;
+                }
+            }
+            return;
+        }
+
+        if (currentState && currentState.type === 'bug_report' && currentState.step === 'enter_description') {
+            currentState.description = text;
+            currentState.step = 'send_media';
+            bot.sendMessage(chatId, 'Спасибо! Теперь, пожалуйста, отправьте фото или видео, демонстрирующее баг.');
+            return;
+        }
+
+        if (currentState && currentState.type === 'graduation' && currentState.step === 'welcome_message') {
+            const welcomeMessage = text;
+
+            // 1. Broadcast the welcome message
+            broadcastWelcomeMessage(telegramId, username, welcomeMessage);
+
+            // 2. Update user graduation date
+            db.run("UPDATE users SET graduated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?", [telegramId], (err) => {
+                if (err) {
+                    console.error('Error updating user graduation date:', err);
+                }
+            });
+
+            // 3. Notify admins
+            notifyAdminsOfGraduation(telegramId, username);
+
+            // 4. Show main menu and success message
+            bot.sendMessage(chatId, '✅ Твое приветствие отправлено! Добро пожаловать в команду!').then(() => {
+                db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                    if (user) {
+                        showMainMenu(chatId, user);
+                    }
+                });
+            });
+
+            // 5. Clear the state
+            delete global.userScreenshots[telegramId];
+            return;
+        }
+
+        if (currentState && currentState.type === 'task_from_template') {
+            if (text.toLowerCase() === 'отмена') {
+                delete global.userScreenshots[telegramId];
+                showTasksMenu(chatId, telegramId);
+                return;
+            }
+
+            switch (currentState.step) {
+                case 'select_template':
+                    if (text === 'Отправить пост редактору') {
+                        currentState.step = 'send_post';
+                        currentState.taskData = {
+                            title: 'Отправить пост редактору'
+                        };
+                        bot.sendMessage(chatId, 'Отправьте пост (фото и/или видео) с текстом в одном сообщении.');
+                    }
+                    break;
+                case 'enter_due_date':
+                    currentState.taskData.due_date = text;
+                    currentState.step = 'select_assignee';
+                    
+                    db.all(`SELECT id, username, full_name, telegram_id, role, position, position_level, registration_date, graduated_at FROM users WHERE is_registered = 1 ORDER BY full_name`, (err, users) => {
+                        if (!users || users.length === 0) {
+                            bot.sendMessage(chatId, '👻 Нет пользователей для назначения задач!').catch(console.error);
+                            delete global.userScreenshots[telegramId];
+                            return;
+                        }
+
+                        currentState.users = users;
+                        let usersList = '👥 Выбери исполнителя:\n\n';
+                        users.forEach((u, index) => {
+                            const name = getUserDisplayName(u);
+                            usersList += `${index + 1}. ${name} (@${u.username})\n`;
+                        });
+                        usersList += '\n✏️ Напиши номер пользователя:';
+                        bot.sendMessage(chatId, usersList);
+                    });
+                    break;
+                case 'select_assignee':
+                    const userIndex = parseInt(text) - 1;
+
+                    if (isNaN(userIndex) || userIndex < 0 || userIndex >= currentState.users.length) {
+                        bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
+                        return;
+                    }
+
+                    currentState.taskData.assignee_id = currentState.users[userIndex].id;
+                    currentState.taskData.assignee_name = getUserDisplayName(currentState.users[userIndex]);
+                    currentState.step = 'confirm_task';
+
+                    const escapeMarkdown = (text) => {
+                        if (text === null || text === undefined) return '';
+                        return text.replace(/([_*`\[\]\(\)])/g, '\\$1');
+                    };
+
+                    const confirmationText = `Вы уверены, что хотите создать следующую задачу?\n\n` +
+                                           `**Название:** ${escapeMarkdown(currentState.taskData.title)}\n` +
+                                           `**Описание:** ${escapeMarkdown(currentState.taskData.description)}\n` +
+                                           `**Срок:** ${escapeMarkdown(currentState.taskData.due_date)}\n` +
+                                           `**Исполнитель:** ${escapeMarkdown(currentState.taskData.assignee_name)}\n` +
+                                           `**Приоритет:** Высокий`;
+
+                    bot.sendMessage(chatId, confirmationText, {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: '✅ Да', callback_data: 'confirm_template_task_final' }],
+                                [{ text: '❌ Нет', callback_data: 'cancel_template_task_final' }]
+                            ]
+                        }
+                    });
+                    break;
+            }
+            return;
+        }
+
         // Vacation request handling
         if (handleVacationInput(chatId, telegramId, text)) {
             return;
         }
 
-        // HR vacation management commands
-        if (handleVacationAdminCommands(chatId, telegramId, text)) {
-            return;
-        }
-
-        // Registration state
         if (currentState && currentState.type === 'registration') {
-            if (currentState.step === 'waiting_for_data') {
-                // Завершаем регистрацию с введенными данными
-                db.run("UPDATE users SET full_name = ?, contacts = ?, is_registered = true WHERE telegram_id = ?",
-                       [text, text, telegramId], () => {
-
-                    const message = currentState.role === 'стажер' ?
-                        '🎊 Регистрация завершена! 🎉\n\n' +
-                        '📚 Теперь проходи тесты и зарабатывай баллы! 💪\n' +
-                        '🔥 Удачи, стажер!' :
-                        '🎊 Регистрация завершена! 🎉\n\n' +
-                        '💰 Получено 50 стартовых П-коинов!\n' +
-                        '🚀 Добро пожаловать в игру!';
-
-                    const keyboard = currentState.role === 'стажер' ? internMenuKeyboard : mainMenuKeyboard;
-                    bot.sendMessage(chatId, message, keyboard).catch(console.error);
-
-                    // Очищаем состояние регистрации
-                    delete global.userScreenshots[telegramId];
-                });
+            switch (currentState.step) {
+                case 'enter_name':
+                    currentState.data.full_name = text;
+                    currentState.step = 'enter_position';
+                    if (currentState.role === 'старичок') {
+                        bot.sendMessage(chatId, `Приятно познакомиться, ${text}! Какую должность уже занимаешь?`).catch(console.error);
+                    } else { // стажер
+                        bot.sendMessage(chatId, `Приятно познакомиться, ${text}! На какую должность ты претендуешь?`).catch(console.error);
+                    }
+                    break;
+                case 'enter_position':
+                    currentState.data.position = text;
+                    if (currentState.role === 'старичок') {
+                        currentState.step = 'select_level';
+                        bot.sendMessage(chatId, `Отлично, ${text}! Теперь выбери свой уровень:`, positionLevelKeyboard).catch(console.error);
+                    } else { // стажер
+                        currentState.step = 'enter_bio';
+                        bot.sendMessage(chatId, 'Отлично! И последний вопрос: расскажи немного о себе.').catch(console.error);
+                    }
+                    break;
+                case 'select_level': // Only for старичок
+                    const level = text.trim();
+                    const validLevels = ['Middle', 'Senior', 'C-Level', 'Head'];
+                    if (!validLevels.includes(level)) {
+                        bot.sendMessage(chatId, '❌ Неверный уровень! Выбери из предложенных вариантов.').catch(console.error);
+                        return;
+                    }
+                    currentState.data.position_level = level; // Save the level
+                    
+                    // Complete registration for старичок
+                    db.run("UPDATE users SET full_name = ?, position = ?, position_level = ?, is_registered = 1 WHERE telegram_id = ?",
+                           [currentState.data.full_name, currentState.data.position, currentState.data.position_level, telegramId], () => {
+                        
+                        bot.sendMessage(chatId, '🎊 Регистрация завершена! 🎉\n\n💰 Получено 400 стартовых П-коинов!\n🚀 Добро пожаловать в игру!', mainMenuKeyboard).catch(console.error);
+                        delete global.userScreenshots[telegramId];
+                    });
+                    break;
+                case 'enter_bio': // Only for стажер
+                    currentState.data.contacts = text;
+                    
+                    // Complete registration for стажер
+                    db.run("UPDATE users SET full_name = ?, position = ?, contacts = ?, is_registered = 1 WHERE telegram_id = ?",
+                           [currentState.data.full_name, currentState.data.position, currentState.data.contacts, telegramId], () => {
+                        
+                        bot.sendMessage(chatId, '🎊 Регистрация завершена! 🎉\n\n📚 Теперь проходи тесты и зарабатывай баллы! 💪\n🔥 Удачи, стажер!', internMenuKeyboard).catch(console.error);
+                        delete global.userScreenshots[telegramId];
+                    });
+                    break;
             }
             return;
         }
@@ -1239,17 +2209,35 @@ function handleTextInput(chatId, telegramId, text, username) {
             return;
         }
         
-        // Обработка ожидания баллов за тест
         if (global.waitingForPoints[telegramId]) {
             const testData = global.waitingForPoints[telegramId];
-            const points = parseInt(text);
-            
-            if (isNaN(points) || points < 0 || points > 100) {
+            const score = parseInt(text);
+
+            if (isNaN(score) || score < 0 || score > 100) {
                 bot.sendMessage(chatId, '🤔 Ммм, что-то не так! Напиши число от 0 до 100 📊').catch(console.error);
                 return;
             }
-            
-            createTestSubmission(chatId, telegramId, testData.testName, points, testData.photoFileId, username);
+
+            if (score < 90) {
+                bot.sendMessage(chatId, 
+                    `😔 К сожалению, ты набрал ${score} баллов. Для прохождения нужно набрать 90 или больше.\n\n` +
+                    'Попробуй еще раз! У тебя все получится! 💪'
+                ).catch(console.error);
+            } else {
+                const rewards = {
+                    'Онбординг в Партнеркин': 15,
+                    'Основы эффективной коммуникации': 15,
+                    'Эффективная работа в режиме многозадачности': 10,
+                    'Информационный стиль и редактура текста': 10,
+                    'Тайм-менеджмент': 10,
+                    'Стресс-менеджмент': 10,
+                    'Work-Life balance: профилактика эмоционального выгорания': 10
+                };
+                const pCoins = rewards[testData.testName] || 0;
+
+                createTestSubmission(chatId, telegramId, testData.testName, score, testData.photoFileId, username);
+            }
+
             delete global.waitingForPoints[telegramId];
             return;
         }
@@ -1295,119 +2283,260 @@ function handleTextInput(chatId, telegramId, text, username) {
             return;
         }
 
+        if (currentState && currentState.type === 'task_cancel' && currentState.step === 'enter_reason') {
+            const reason = text;
+            const { taskId } = currentState; // Assuming taskId is in the state
+
+            db.run("UPDATE tasks SET status = 'cancelled', cancelled_reason = ? WHERE id = ?", [reason, taskId], function(err) {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка отмены задачи.');
+                    console.error('Error cancelling task:', err);
+                } else {
+                    bot.sendMessage(chatId, `✅ Задача #${taskId} была отменена.`);
+                    cancelTaskReminder(taskId);
+                }
+                delete global.userScreenshots[telegramId];
+            });
+            return;
+        }
+
+        // Обработка отмены задачи
+        if (currentState && currentState.type === 'task_cancel' && currentState.step === 'enter_reason') {
+            const reason = text;
+            const { taskId } = currentState;
+
+            db.run("UPDATE tasks SET status = 'cancelled', cancelled_reason = ? WHERE id = ?", [reason, taskId], function(err) {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка отмены задачи.');
+                    console.error('Error cancelling task:', err);
+                } else {
+                    bot.sendMessage(chatId, `✅ Задача #${taskId} была отменена.`);
+                    // Stop reminders for the cancelled task
+                    cancelTaskReminder(taskId);
+                }
+                delete global.userScreenshots[telegramId];
+            });
+            return;
+        }
+
         // Обработка сообщения статуса
-        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'status_message') {
+        if (currentState && currentState.type === 'status_message') {
             handleStatusMessage(chatId, telegramId, text);
             return;
         }
 
-        // Обработка завершения задач
-        if (text.startsWith('выполнил ')) {
-            const taskNumber = parseInt(text.replace('выполнил ', ''));
-            completeTask(chatId, telegramId, taskNumber);
+        if (currentState && currentState.type === 'pcoin_exchange') {
+            switch (currentState.step) {
+                case 'enter_amount': {
+                    const amount = parseInt(text);
+                    if (isNaN(amount) || amount <= 0 || amount % 10 !== 0) {
+                        bot.sendMessage(chatId, '❌ Неверная сумма. Введите положительное число, кратное 10.');
+                        return;
+                    }
+
+                    db.get("SELECT p_coins FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                        if (err || !user || user.p_coins < amount) {
+                            bot.sendMessage(chatId, '❌ У вас недостаточно П-коинов для обмена.');
+                            return;
+                        }
+
+                        const pointsToReceive = amount / 10;
+                        currentState.amountToExchange = amount;
+                        currentState.pointsToReceive = pointsToReceive;
+                        currentState.step = 'confirm_exchange';
+
+                        const confirmationKeyboard = {
+                            reply_markup: {
+                                keyboard: [['✅ Да, подтверждаю', '❌ Нет, отменить']],
+                                resize_keyboard: true,
+                                one_time_keyboard: true
+                            }
+                        };
+
+                        bot.sendMessage(chatId, `Вы уверены, что хотите обменять ${amount} П-коинов на ${pointsToReceive} баллов?`, confirmationKeyboard);
+                    });
+                    break;
+                }
+
+                case 'confirm_exchange': {
+                    if (text === '✅ Да, подтверждаю') {
+                        const { amountToExchange, pointsToReceive } = currentState;
+                        db.get("SELECT id, p_coins FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                            if (err || !user || user.p_coins < amountToExchange) {
+                                bot.sendMessage(chatId, '❌ Недостаточно П-коинов. Операция отменена.', mainMenuKeyboard);
+                                delete global.userScreenshots[telegramId];
+                                return;
+                            }
+
+                            db.serialize(() => {
+                                db.run("UPDATE users SET p_coins = p_coins - ?, company_points = company_points + ? WHERE telegram_id = ?", [amountToExchange, pointsToReceive, telegramId]);
+                                db.run("INSERT INTO exchange_history (user_id, p_coins_exchanged, company_points_received) VALUES (?, ?, ?)", [user.id, amountToExchange, pointsToReceive]);
+                            });
+
+                            bot.sendMessage(chatId, `✅ Обмен успешно выполнен!\n\nВы получили: ${pointsToReceive} баллов.\nСписано: ${amountToExchange} П-коинов.`, mainMenuKeyboard);
+                            console.log(`[EXCHANGE] User ${telegramId} exchanged ${amountToExchange} p-coins for ${pointsToReceive} company points.`);
+                            delete global.userScreenshots[telegramId];
+                        });
+                    } else {
+                        bot.sendMessage(chatId, 'Обмен отменен.', mainMenuKeyboard);
+                        delete global.userScreenshots[telegramId];
+                    }
+                    break;
+                }
+            }
             return;
         }
-        
-        // Регистрация пользователя
-        db.get("SELECT * FROM users WHERE telegram_id = ? AND is_registered = false", [telegramId], (err, user) => {
-            if (user) {
-                db.run("UPDATE users SET full_name = ?, contacts = ?, is_registered = true WHERE telegram_id = ?",
-                       [text, text, telegramId], () => {
-                       
-                    const message = user.role === 'стажер' ?
-                        '🎊 Регистрация завершена! 🎉\n\n' +
-                        '📚 Теперь проходи тесты и зарабатывай баллы! 💪\n' +
-                        '🔥 Удачи, стажер!' :
-                        '🎊 Регистрация завершена! 🎉\n\n' +
-                        '💰 Получено 50 стартовых П-коинов!\n' +
-                        '🚀 Добро пожаловать в игру!';
-                    
-                    const keyboard = user.role === 'стажер' ? internMenuKeyboard : mainMenuKeyboard;
-                    bot.sendMessage(chatId, message, keyboard).catch(console.error);
-                });
+
+        if (currentState && currentState.type === 'pcoin_request') {
+            switch (currentState.step) {
+                case 'select_target': {
+                    const userIndex = parseInt(text) - 1;
+                    if (isNaN(userIndex) || userIndex < 0 || userIndex >= currentState.users.length) {
+                        bot.sendMessage(chatId, '❌ Неверный номер пользователя. Попробуйте еще раз.');
+                        return;
+                    }
+                    currentState.targetUser = currentState.users[userIndex];
+                    currentState.step = 'enter_amount';
+                    bot.sendMessage(chatId, `Выбран пользователь: ${getUserDisplayName(currentState.targetUser)}.\n\nСколько П-коинов вы хотите попросить?`);
+                    break;
+                }
+
+                case 'enter_amount': {
+                    const amount = parseInt(text);
+                    if (isNaN(amount) || amount <= 0) {
+                        bot.sendMessage(chatId, '❌ Введите положительное число.');
+                        return;
+                    }
+                    currentState.amount = amount;
+                    currentState.step = 'enter_reason';
+                    bot.sendMessage(chatId, `Сумма: ${amount} П-коинов.\n\nНапишите причину/сообщение для вашего запроса:`);
+                    break;
+                }
+
+                case 'enter_reason': {
+                    currentState.reason = text;
+                    const { requester_id } = currentState; // This needs to be set at the start
+                    const { targetUser, amount, reason } = currentState;
+
+                    db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, requester) => {
+                        if (err || !requester) {
+                            bot.sendMessage(chatId, '❌ Ошибка: не удалось найти ваш профиль.');
+                            return;
+                        }
+
+                        db.run(`INSERT INTO pcoin_requests (requester_id, target_id, amount, reason) VALUES (?, ?, ?, ?)`,
+                            [requester.id, targetUser.id, amount, reason], function(err) {
+                                if (err) {
+                                    bot.sendMessage(chatId, '❌ Не удалось создать запрос.');
+                                    console.error('P-coin request insert error:', err);
+                                    delete global.userScreenshots[telegramId];
+                                    return;
+                                }
+
+                                const requestId = this.lastID;
+                                const requesterName = getUserDisplayName(requester);
+
+                                const notificationText = `🙏 **Запрос на П-коины**\n\n` +
+                                                       `**От:** ${requesterName}\n` +
+                                                       `**Сумма:** ${amount} П-коинов\n` +
+                                                       `**Причина:** ${reason}`;
+
+                                const keyboard = {
+                                    inline_keyboard: [[
+                                        { text: '✅ Одобрить', callback_data: `approve_pcoin_request_${requestId}` },
+                                        { text: '❌ Отклонить', callback_data: `decline_pcoin_request_${requestId}` }
+                                    ]]
+                                };
+
+                                bot.sendMessage(targetUser.telegram_id, notificationText, { parse_mode: 'Markdown', reply_markup: keyboard });
+                                bot.sendMessage(chatId, '✅ Ваш запрос успешно отправлен!', mainMenuKeyboard);
+                                delete global.userScreenshots[telegramId];
+                            });
+                    });
+                    break;
+                }
             }
-        });
+            return;
+        }
+
+
+        
     } catch (error) {
         console.error('❌ Handle text input error:', error);
     }
+}
+
+function showDetailedProfile(chatId, user) {
+    db.get(`SELECT 
+            COUNT(*) as total_active_tasks,
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_tasks,
+            SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_tasks
+        FROM tasks WHERE assignee_id = ? AND status IN ('pending', 'in_progress')`, [user.id], (err, taskStats) => {
+    const totalActiveTasks = taskStats ? taskStats.total_active_tasks : 0;
+    const pendingTasks = taskStats ? taskStats.pending_tasks : 0;
+    const inProgressTasks = taskStats ? taskStats.in_progress_tasks : 0;
+
+        let menuText = `👤 ${getUserDisplayName(user)}\n`;
+        
+        if (user.role === 'стажер' && user.graduated_at) {
+            menuText += `🎭 Статус: стажер-Junior\n\n`;
+        } else {
+            const position = user.role === 'старичок' ? 'Опытный сотрудник' : 'Сотрудник';
+            menuText += `🏢 ${position}\n\n`;
+        }
+
+        menuText += `📊 Ваш Баланс:\n`;
+        menuText += `💰 П-коины: ${user.p_coins}\n`;
+        menuText += `🏆 Баллы: ${user.company_points}\n\n`;
+        menuText += `⚡ Энергия: ${user.energy}%\n\n`;
+        menuText += `📈 Курс обмена: 10 П-коинов = 1 балл\n\n`;
+
+        if (totalActiveTasks > 0) {
+            menuText += `📋 Активные задачи: ${totalActiveTasks}\n`;
+            if (inProgressTasks > 0) {
+                menuText += `   ▶️ В работе: ${inProgressTasks}\n`;
+            }
+            if (pendingTasks > 0) {
+                menuText += `   ⏳ Ожидают: ${pendingTasks}\n`;
+            }
+        } else {
+            menuText += `✅ Нет активных задач\n`;
+        }
+
+        menuText += `🎓 Рекомендуемые курсы: Доступны в разделе "Курсы"\n\n`;
+
+        const greetings = [
+            '🌟 Желаю продуктивного дня!',
+            '🚀 Пусть день будет полон успехов!',
+            '💪 Удачи в новых свершениях!',
+            '🔥 Покоряй новые вершины!',
+            '⭐ Пусть день принесет радость!'
+        ];
+        const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+        menuText += randomGreeting;
+
+        bot.sendMessage(chatId, menuText, mainMenuKeyboard);
+    });
 }
 
 function showMainMenu(chatId, user) {
     console.log(`[MENU DEBUG] showMainMenu called for user ${user.id} (role: ${user.role}), chatId: ${chatId}`);
     try {
         if (user.role === 'стажер') {
-            console.log(`[MENU DEBUG] Processing intern path for user ${user.id}`);
-            db.get(`SELECT COUNT(*) as completed FROM intern_progress ip
-                    JOIN users u ON u.id = ip.user_id
-                    WHERE u.telegram_id = ? AND ip.completed = true`, [user.telegram_id], (err, progress) => {
-                if (err) {
-                    console.error('[MENU DEBUG] Intern progress query error:', err);
-                    return;
-                }
-                console.log(`[MENU DEBUG] Intern progress fetched: ${progress ? progress.completed : 0} completed courses`);
-
-                if (progress && progress.completed >= 4) {
-                    console.log(`[MENU DEBUG] Sending completed intern menu message`);
-                    bot.sendMessage(chatId,
-                        '🎉 Поздравляю! Стажировка завершена! 🏆\n\n' +
-                        `💰 Баланс: ${user.p_coins} П-коинов\n` +
-                        '🚀 Теперь тебе доступны ВСЕ функции!\n' +
-                        '🔥 Время покорять новые вершины!', mainMenuKeyboard).catch((sendErr) => {
-                            console.error('[MENU DEBUG] Failed to send completed intern message:', sendErr);
-                        });
-                } else {
-                    console.log(`[MENU DEBUG] Sending active intern menu message`);
-                    bot.sendMessage(chatId,
-                        '👋 Привет, стажер! 📚\n\n' +
-                        `💰 Баланс: ${user.p_coins} П-коинов\n` +
-                        '🎯 Продолжай проходить курсы!\n' +
-                        '💪 Каждый курс приближает к цели!', internMenuKeyboard).catch((sendErr) => {
-                            console.error('[MENU DEBUG] Failed to send active intern message:', sendErr);
-                        });
-                }
-            });
-        } else {
-            console.log(`[MENU DEBUG] Processing non-intern path for user ${user.id}`);
-            // Получаем активные задачи пользователя
-            db.all(`SELECT COUNT(*) as active_tasks FROM tasks
-                    WHERE assignee_id = ? AND status = 'pending'`, [user.id], (err, taskCount) => {
-
-                const activeTasksCount = taskCount && taskCount[0] ? taskCount[0].active_tasks : 0;
-
-                // Определяем должность пользователя (можно расширить логику)
-                const position = user.role === 'старичок' ? 'Опытный сотрудник' : 'Сотрудник';
-
-                let menuText = `👤 ${user.full_name || user.username}\n`;
-                menuText += `🏢 ${position}\n\n`;
-                menuText += `💰 Баланс: ${user.p_coins} П-коинов\n`;
-                menuText += `⚡ Энергия: ${user.energy}%\n`;
-
-                if (activeTasksCount > 0) {
-                    menuText += `📋 Активные задачи: ${activeTasksCount}\n`;
-                } else {
-                    menuText += `✅ Нет активных задач\n`;
-                }
-
-                // Добавляем курсы которые нужно пройти (можно расширить)
-                menuText += `🎓 Рекомендуемые курсы: Доступны в разделе "Курсы"\n\n`;
-
-                // Пожелание хорошего дня
-                const greetings = [
-                    '🌟 Желаю продуктивного дня!',
-                    '🚀 Пусть день будет полон успехов!',
-                    '💪 Удачи в новых свершениях!',
-                    '🔥 Покоряй новые вершины!',
-                    '⭐ Пусть день принесет радость!'
-                ];
-
-                const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-                menuText += randomGreeting;
-
-                console.log(`[MENU DEBUG] Sending non-intern main menu message for user ${user.id}`);
-                bot.sendMessage(chatId, menuText, mainMenuKeyboard).catch((sendErr) => {
-                    console.error('[MENU DEBUG] Failed to send non-intern main menu message:', sendErr);
-                });
-            });
+            if (user.graduated_at) {
+                showDetailedProfile(chatId, user);
+            } else {
+                console.log(`[MENU DEBUG] Sending active intern menu message`);
+                bot.sendMessage(chatId,
+                    '👋 Привет, стажер! 📚\n\n' +
+                    `💰 Баланс: ${user.p_coins} П-коинов\n` +
+                    '🎯 Продолжай проходить тесты!\n' +
+                    '💪 Каждый тест приближает к цели!', internMenuKeyboard).catch((sendErr) => {
+                        console.error('[MENU DEBUG] Failed to send active intern message:', sendErr);
+                    });
+            }
+        } else { // старичок
+            showDetailedProfile(chatId, user);
         }
     } catch (error) {
         console.error('❌ Show main menu error:', error);
@@ -1487,9 +2616,9 @@ function showTestMenu(chatId) {
     try {
         bot.sendMessage(chatId,
             '📚 ЦЕНТР ОБУЧЕНИЯ 🎓\n\n' +
-            '🌟 Знакомство с компанией - 10 баллов\n' +
-            '📈 Основы работы - 15 баллов\n' +
-            '🎯 Продуктовая линейка - 15 баллов\n\n' +
+            'Онбординг в Партнеркин - 150 П-коинов 💎\n' +
+            'Основы эффективной коммуникации - 150 П-коинов 💎\n' +
+            'Эффективная работа в режиме многозадачности - 100 П-коинов 💎\n\n' +
             '💡 Каждый тест - это новые знания и баллы!\n' +
             '🎯 Выбери тест для прохождения:', testKeyboard).catch(console.error);
     } catch (error) {
@@ -1497,11 +2626,11 @@ function showTestMenu(chatId) {
     }
 }
 
-function selectTest(chatId, telegramId, testName, reward) {
+function selectTest(chatId, telegramId, testName, reward, link) {
     try {
         db.get(`SELECT ip.* FROM intern_progress ip 
                 JOIN users u ON u.id = ip.user_id 
-                WHERE u.telegram_id = ? AND ip.test_name = ? AND ip.completed = true`, 
+                WHERE u.telegram_id = ? AND ip.test_name = ? AND ip.completed = 1`, 
                [telegramId, testName], (err, completed) => {
             
             if (completed) {
@@ -1527,12 +2656,13 @@ function selectTest(chatId, telegramId, testName, reward) {
                 
                 bot.sendMessage(chatId, 
                     `🎯 Выбран тест: "${testName}" 📖\n\n` +
-                    `🏆 Награда: до ${reward} П-коинов\n` +
+                    `🏆 Награда: ${reward} П-коинов (при результате 90-100 баллов)\n` +
                     `⏰ Время: ~15 минут\n` +
                     `🔗 Формат: Онлайн тестирование\n\n` +
-                    `🌐 Ссылка на тест:\nhttps://partnerkino.ru/tests/\n\n` +
+                    `🌐 Ссылка на тест:\n${link}\n\n` +
                     '📸 После прохождения отправь скриншот результата!\n' +
-                    '🎯 Удачи в тестировании! 💪').catch(console.error);
+                    '🎯 Укажи итоговые баллы за тест.\n' +
+                    '💪 Удачи в тестировании! 💪').catch(console.error);
             });
         });
     } catch (error) {
@@ -1595,13 +2725,14 @@ function handleScreenshot(chatId, telegramId, photoFileId, username) {
 
 function createTestSubmission(chatId, telegramId, testName, points, photoFileId, username) {
     try {
-        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
             
-            db.run(`INSERT INTO test_submissions 
-                    (user_id, telegram_id, username, test_name, points_claimed, photo_file_id, status) 
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending')`, 
-                   [user.id, telegramId, username, testName, points, photoFileId], () => {
+            // Store the points as entered by the user without any conversion
+            db.run(`INSERT INTO test_submissions
+                    (user_id, telegram_id, username, test_name, points_claimed, photo_file_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+                   [user.id, telegramId, username, testName, points, photoFileId], function() {
                 
                 bot.sendMessage(chatId, 
                     `🚀 Заявка отправлена! 📋\n\n` +
@@ -1610,6 +2741,19 @@ function createTestSubmission(chatId, telegramId, testName, points, photoFileId,
                     `📸 Скриншот прикреплен\n\n` +
                     '⏳ Жди решения администратора!\n' +
                     '📱 Уведомление придет автоматически! 🔔').catch(console.error);
+
+                if (user.role === 'стажер') {
+                    db.get("SELECT COUNT(*) as count FROM test_submissions WHERE user_id = ?", [user.id], (err, row) => {
+                        if (err) {
+                            console.error('Error counting submissions:', err);
+                            return;
+                        }
+
+                        if (row.count === 3) {
+                            notifyAdminsOfInternCompletion(user);
+                        }
+                    });
+                }
             });
         });
     } catch (error) {
@@ -1623,12 +2767,13 @@ function showBalance(chatId, telegramId) {
     try {
         db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (user) {
-                bot.sendMessage(chatId, 
-                    `💰 ТВОЙ БАЛАНС 📊\n\n` +
-                    `💎 П-коинов: ${user.p_coins}\n` +
+                bot.sendMessage(chatId,
+                    `📊 Ваш Баланс:\n` +
+                    `💰 П-коины: ${user.p_coins}\n` +
+                    `🏆 Баллы: ${user.company_points}\n\n` +
                     `⚡ Энергия: ${user.energy}%\n` +
                     `👤 Статус: ${user.role}\n\n` +
-                    '🔥 Продолжай зарабатывать баллы!').catch(console.error);
+                    '🔥 Продолжай в том же духе!').catch(console.error);
             }
         });
     } catch (error) {
@@ -1640,41 +2785,42 @@ function showInternProgress(chatId, telegramId) {
     try {
         db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
-
-            db.all(`SELECT * FROM intern_progress WHERE user_id = ? ORDER BY completed_date DESC`,
-                   [user.id], (err, courses) => {
-
-                const allCourses = [
-                    { name: 'Основы аналитики', reward: 30, emoji: '📊' },
-                    { name: 'Менеджмент проектов', reward: 40, emoji: '💼' },
-                    { name: 'Маркетинг и реклама', reward: 35, emoji: '🎯' },
-                    { name: 'SEO оптимизация', reward: 25, emoji: '🔍' }
+            
+            db.all(`SELECT * FROM intern_progress WHERE user_id = ? ORDER BY completed_date DESC`, 
+                   [user.id], (err, tests) => {
+                
+                const allTests = [
+                    { name: 'Информационный стиль и редактура текста', reward: 100, emoji: '📝' },
+                    { name: 'Тайм-менеджмент', reward: 100, emoji: '⏰' },
+                    { name: 'Стресс-менеджмент', reward: 100, emoji: '🧘' },
+                    { name: 'Work-Life balance: профилактика эмоционального выгорания', reward: 100, emoji: '⚖️' }
                 ];
-
-                let progressText = '📊 ПРОГРЕСС КУРСОВ 🎓\n\n';
-                let completed = false;
+                
+                let progressText = '📊 ПРОГРЕСС ОБУЧЕНИЯ 🎓\n\n';
+                let completed = 0;
                 let totalEarned = 0;
-
-                allCourses.forEach(courseInfo => {
-                    const course = courses.find(c => c.test_name === courseInfo.name && c.completed === 1);
-                    if (course) {
-                        progressText += `✅ ${courseInfo.emoji} ${courseInfo.name} - ${course.points_earned} П-коинов\n`;
+                
+                allTests.forEach(testInfo => {
+                    const test = tests.find(t => t.test_name === testInfo.name && t.completed === 1);
+                    if (test) {
+                        // Отображаем те же значения баллов, которые ввел пользователь
+                        progressText += `✅ ${testInfo.emoji} ${testInfo.name} - ${test.points_earned} баллов\n`;
                         completed++;
-                        totalEarned += course.points_earned;
+                        totalEarned += test.points_earned;
                     } else {
-                        progressText += `⏳ ${courseInfo.emoji} ${courseInfo.name} - ${courseInfo.reward} П-коинов\n`;
+                        progressText += `⏳ ${testInfo.emoji} ${testInfo.name} - ${testInfo.reward} баллов\n`;
                     }
                 });
-
-                progressText += `\n📈 Завершено: ${completed}/4\n`;
-                progressText += `💰 Заработано: ${totalEarned} П-коинов\n`;
-
-                if (completed >= 4) {
-                    progressText += '\n🎉 КУРСЫ ЗАВЕРШЕНЫ! 🏆\n🚀 Ты молодец!';
+                
+                progressText += `\n📈 Завершено: ${completed}/${allTests.length}\n`;
+                progressText += `💰 Заработано: ${totalEarned} баллов\n`;
+                
+                if (completed >= allTests.length) {
+                    progressText += '\n🎉 ОБУЧЕНИЕ ЗАВЕРШЕНО! 🏆\n🚀 Ты молодец!';
                 } else {
                     progressText += '\n💪 Продолжай! Ты на верном пути!';
                 }
-
+                
                 bot.sendMessage(chatId, progressText).catch(console.error);
             });
         });
@@ -1769,29 +2915,76 @@ function showCoursesMenu(chatId) {
     }
     global.userMenuContext[chatId] = context;
     console.log(`[NAV LOG] Entering courses menu for user ${chatId}, context: ${JSON.stringify(context)}`);
+    
+    // Get telegramId from chatId
+    const telegramId = getTelegramIdFromChat(chatId);
+    
+    // Define all available courses
+    const allCourses = [
+        'Информационный стиль и редактура текста',
+        'Тайм-менеджмент',
+        'Стресс-менеджмент',
+        'Work-Life balance: профилактика эмоционального выгорания'
+    ];
+    
     try {
-        bot.sendMessage(chatId,
-            '🎓 ПРОФЕССИОНАЛЬНЫЕ КУРСЫ 📚\n\n' +
-            '📊 Основы аналитики - 30 П-коинов 💎\n' +
-            '💼 Менеджмент проектов - 40 П-коинов 💎\n' +
-            '🎯 Маркетинг и реклама - 35 П-коинов 💎\n' +
-            '🔍 SEO оптимизация - 25 П-коинов 💎\n\n' +
-            '🚀 Прокачивай навыки и получай награды!\n' +
-            '💡 Выбери курс для изучения:', coursesKeyboard).catch(console.error);
+        // Check if user has completed all courses
+        db.all(`SELECT DISTINCT test_name FROM test_submissions WHERE telegram_id = ? AND status = 'approved'`, [telegramId], (err, completedCourses) => {
+            if (err) {
+                console.error('❌ Error checking completed courses:', err);
+                // Show regular courses menu on error
+                bot.sendMessage(chatId,
+                    '🎓 ПРОФЕССИОНАЛЬНЫЕ КУРСЫ 📚\n\n' +
+                    'Информационный стиль и редактура текста - 100 💰\n' +
+                    'Тайм-менеджмент - 100 💰\n' +
+                    'Стресс-менеджмент - 100 💰\n' +
+                    'Work-Life balance: профилактика эмоционального выгорания - 100 💰\n\n' +
+                    '🚀 Прокачивай навыки и получай награды!\n' +
+                    '💡 Выбери курс для изучения:', coursesKeyboard).catch(console.error);
+                return;
+            }
+            
+            // Extract completed course names
+            const completedCourseNames = completedCourses.map(course => course.test_name);
+            
+            // Check if all courses are completed
+            const allCoursesCompleted = allCourses.every(course => completedCourseNames.includes(course));
+            
+            if (allCoursesCompleted) {
+                // Show congratulatory message
+                bot.sendMessage(chatId,
+                    '🎉 Поздравляем! Ты прошел все доступные курсы! Ты большой молодец и настоящий эксперт! Продолжай в том же духе! 🚀',
+                    { reply_markup: {
+                        keyboard: mainMenuKeyboard.keyboard,
+                        resize_keyboard: true
+                    }}
+                ).catch(console.error);
+            } else {
+                // Show regular courses menu
+                bot.sendMessage(chatId,
+                    '🎓 ПРОФЕССИОНАЛЬНЫЕ КУРСЫ 📚\n\n' +
+                    'Информационный стиль и редактура текста - 100 💰\n' +
+                    'Тайм-менеджмент - 100 💰\n' +
+                    'Стресс-менеджмент - 100 💰\n' +
+                    'Work-Life balance: профилактика эмоционального выгорания - 100 💰\n\n' +
+                    '🚀 Прокачивай навыки и получай награды!\n' +
+                    '💡 Выбери курс для изучения:', coursesKeyboard).catch(console.error);
+            }
+        });
     } catch (error) {
         console.error('❌ Show courses menu error:', error);
     }
 }
 
-function selectCourse(chatId, telegramId, courseName, reward) {
+function selectCourse(chatId, telegramId, courseName, reward, link) {
     try {
         bot.sendMessage(chatId, 
             `🎓 Курс: "${courseName}" 📖\n\n` +
-            `🏆 Награда за прохождение: ${reward} П-коинов\n` +
+            `🏆 Награда за прохождение: ${reward} П-коинов (при результате 90-100 баллов)\n` +
             `⏰ Длительность: ~2-3 часа\n` +
             `🖥️ Формат: Онлайн обучение\n` +
             `🎯 Сложность: Средний уровень\n\n` +
-            `🌐 Ссылка на курс:\nhttps://partnerkino.ru/courses/\n\n` +
+            `🌐 Ссылка на курс:\n${link}\n\n` +
             '📸 После завершения курса отправь скриншот сертификата!\n' +
             '🎯 Укажи итоговые баллы за курс.\n' +
             '💪 Удачи в обучении!').catch(console.error);
@@ -1842,18 +3035,18 @@ function findOpponent(chatId, telegramId) {
                 return;
             }
             
-            if (user.p_coins < 10) {
+            if (user.p_coins < 50) {
                 bot.sendMessage(chatId, 
                     '💸 Недостаточно П-коинов! 😢\n\n' +
-                    '💰 Нужно минимум 10 коинов для сражения\n' +
+                    '💰 Нужно минимум 50 коинов для сражения\n' +
                     '📚 Пройди тесты или курсы!').catch(console.error);
                 return;
             }
             
             db.get(`SELECT * FROM users 
                     WHERE telegram_id != ? 
-                    AND p_coins >= 10 
-                    AND is_registered = true 
+                    AND p_coins >= 50 
+                    AND is_registered = 1 
                     ORDER BY RANDOM() LIMIT 1`, [telegramId], (err, opponent) => {
                 
                 if (!opponent) {
@@ -1864,7 +3057,7 @@ function findOpponent(chatId, telegramId) {
                 }
                 
                 const playerWins = Math.random() > 0.5;
-                const pointsWon = 10;
+                const pointsWon = 50;
                 
                 // Обновляем энергию игрока
                 db.run("UPDATE users SET energy = energy - 20 WHERE telegram_id = ?", [telegramId]);
@@ -1923,9 +3116,9 @@ function findOpponent(chatId, telegramId) {
 
 function showRating(chatId, telegramId) {
     try {
-        db.all(`SELECT username, full_name, p_coins, role 
-                FROM users 
-                WHERE is_registered = true 
+        db.all(`SELECT username, full_name, p_coins, role, position, position_level, registration_date, graduated_at
+                FROM users
+                WHERE is_registered = 1 
                 ORDER BY p_coins DESC 
                 LIMIT 10`, (err, users) => {
             
@@ -1939,7 +3132,7 @@ function showRating(chatId, telegramId) {
             let ratingText = '🏆 ТОП-10 ПО П-КОИНАМ 💰\n\n';
             
             users.forEach((user, index) => {
-                const name = user.full_name || user.username || 'Неизвестный';
+                const name = getUserDisplayName(user);
                 const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}. 🏅`;
                 ratingText += `${medal} ${name} - ${user.p_coins} коинов\n`;
             });
@@ -1971,16 +3164,16 @@ function restoreEnergy(chatId, telegramId) {
 
 function showShop(chatId, telegramId) {
     try {
-        db.get("SELECT p_coins FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        db.get("SELECT p_coins, company_points FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
             
             bot.sendMessage(chatId, 
                 `🛒 МАГАЗИН НАГРАД 🎁\n\n` +
-                `💰 Твой баланс: ${user.p_coins} П-коинов\n\n` +
-                '🏖️ Выходной день - 100 коинов 🌴\n' +
-                '👕 Мерч компании - 50 коинов 🎽\n' +
-                '🎁 Секретный сюрприз - 200 коинов 🎊\n' +
-                '☕ Кофе в офис - 25 коинов ☕\n\n' +
+                `Ваш баланс:\n` +
+                `- ${user.company_points} баллов\n` +
+                `- ${user.p_coins} П-коинов\n\n` +
+                `Курс обмена: 10 П-коинов = 1 балл\n\n` +
+                'Все товары покупаются за баллы. Обменять П-коины на баллы можно в кошельке.\n\n' +
                 '🛍️ Что выберешь?', shopKeyboard).catch(console.error);
         });
     } catch (error) {
@@ -1993,25 +3186,25 @@ function buyItem(chatId, telegramId, itemName, price) {
         db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
             
-            if (user.p_coins < price) {
+            if (user.company_points < price) {
                 bot.sendMessage(chatId, 
-                    `💸 Недостаточно П-коинов! 😢\n\n` +
-                    `💰 У тебя: ${user.p_coins} коинов\n` +
-                    `🎯 Нужно: ${price} коинов\n` +
-                    `📊 Не хватает: ${price - user.p_coins} коинов\n\n` +
-                    '💪 Пройди тесты или курсы!').catch(console.error);
+                    `💸 Недостаточно баллов! 😢\n\n` +
+                    `💰 У тебя: ${user.company_points} баллов\n` +
+                    `🎯 Нужно: ${price} баллов\n` +
+                    `📊 Не хватает: ${price - user.company_points} баллов\n\n` +
+                    '💪 Обменяй П-коины на баллы в кошельке!').catch(console.error);
                 return;
             }
             
-            db.run("UPDATE users SET p_coins = p_coins - ? WHERE telegram_id = ?", [price, telegramId], () => {
+            db.run("UPDATE users SET company_points = company_points - ? WHERE telegram_id = ?", [price, telegramId], () => {
                 db.run("INSERT INTO purchases (user_id, item_name, price) VALUES (?, ?, ?)",
                        [user.id, itemName, price]);
                 
                 bot.sendMessage(chatId, 
                     `🎉 ПОКУПКА УСПЕШНА! 🛍️\n\n` +
                     `🎁 Товар: ${itemName}\n` +
-                    `💸 Потрачено: ${price} П-коинов\n` +
-                    `💰 Остаток: ${user.p_coins - price} коинов\n\n` +
+                    `💸 Потрачено: ${price} баллов\n` +
+                    `💰 Остаток: ${user.company_points - price} баллов\n\n` +
                     '👤 Обратись к HR для получения товара!\n' +
                     '🎊 Наслаждайся покупкой!').catch(console.error);
             });
@@ -2027,10 +3220,10 @@ function showEventsMenu(chatId) {
     try {
         bot.sendMessage(chatId, 
             '🎯 КОРПОРАТИВНЫЕ МЕРОПРИЯТИЯ 🎉\n\n' +
-            '🏃‍♂️ Зарядка - 5 П-коинов ⚡\n' +
-            '🎰 Турнир по покеру - 10 П-коинов 🃏\n' +
-            '🎉 Корпоративная вечеринка - 15 П-коинов 🥳\n' +
-            '📚 Обучающие тренинги - 20 П-коинов 🎓\n\n' +
+            '🏃‍♂️ Зарядка - 50 П-коинов ⚡\n' +
+            '🎰 Турнир по покеру - 100 П-коинов 🃏\n' +
+            '🎉 Корпоративная вечеринка - 150 П-коинов 🥳\n' +
+            '📚 Обучающие тренинги - 200 П-коинов 🎓\n\n' +
             '📅 Выбери мероприятие для записи!\n' +
             '⏰ Доступны тайм-слоты на выбор!', eventsKeyboard).catch(console.error);
     } catch (error) {
@@ -2220,10 +3413,10 @@ function startGiftProcess(chatId, telegramId) {
                 };
 
                 // Показываем список пользователей для подарка
-                db.all(`SELECT username, full_name, telegram_id
+                db.all(`SELECT username, full_name, telegram_id, role, position, position_level, registration_date, graduated_at
                         FROM users
                         WHERE telegram_id != ?
-                        AND is_registered = true
+                        AND is_registered = 1
                         ORDER BY full_name`, [telegramId], (err, users) => {
 
                     if (!users || users.length === 0) {
@@ -2237,7 +3430,7 @@ function startGiftProcess(chatId, telegramId) {
                     usersList += '👥 Выбери получателя:\n\n';
 
                     users.forEach((u, index) => {
-                        const name = u.full_name || u.username || 'Неизвестный';
+                        const name = getUserDisplayName(u);
                         usersList += `${index + 1}. ${name} (@${u.username})\n`;
                     });
 
@@ -2251,6 +3444,29 @@ function startGiftProcess(chatId, telegramId) {
     } catch (error) {
         console.error('❌ Start gift process error:', error);
     }
+}
+
+function startPcoinExchange(chatId, telegramId) {
+    db.get("SELECT p_coins, company_points FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка. Не удалось найти ваш профиль.');
+            return;
+        }
+
+        const message = `🏦 **Обмен П-коинов на баллы**\n\n` +
+                        `Текущий курс: **10 П-коинов = 1 балл**\n\n` +
+                        `У вас в наличии:\n` +
+                        `- ${user.p_coins} П-коинов\n` +
+                        `- ${user.company_points} баллов\n\n` +
+                        `Сколько П-коинов вы хотите обменять? Введите сумму, кратную 10.`;
+
+        global.userScreenshots[telegramId] = {
+            type: 'pcoin_exchange',
+            step: 'enter_amount'
+        };
+
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    });
 }
 
 function handleGiftProcess(chatId, telegramId, text) {
@@ -2275,7 +3491,7 @@ function handleGiftProcess(chatId, telegramId, text) {
             giftData.step = 'enter_amount';
 
             bot.sendMessage(chatId,
-                `🎁 Получатель: ${giftData.selectedUser.full_name || giftData.selectedUser.username}\n\n` +
+                `🎁 Получатель: ${getUserDisplayName(giftData.selectedUser)}\n\n` +
                 `💰 Доступно: ${giftData.remaining} коинов\n` +
                 `📊 Минимум: ${config.GAME.min_gift_amount} коинов\n\n` +
                 '💎 Сколько коинов подарить?\n' +
@@ -2298,7 +3514,7 @@ function handleGiftProcess(chatId, telegramId, text) {
 
             bot.sendMessage(chatId,
                 `🎁 Подарок готов! 💝\n\n` +
-                `👤 Получатель: ${giftData.selectedUser.full_name || giftData.selectedUser.username}\n` +
+                `👤 Получатель: ${getUserDisplayName(giftData.selectedUser)}\n` +
                 `💰 Сумма: ${amount} П-коинов\n\n` +
                 '💌 Добавь сообщение к подарку:\n' +
                 '✏️ (или напиши "без сообщения")').catch(console.error);
@@ -2339,7 +3555,7 @@ function processGift(chatId, telegramId, giftData, message) {
                         // Уведомляем отправителя
                         bot.sendMessage(chatId,
                             `🎉 ПОДАРОК ОТПРАВЛЕН! 💝\n\n` +
-                            `👤 Получатель: ${giftData.selectedUser.full_name || giftData.selectedUser.username}\n` +
+                            `👤 Получатель: ${getUserDisplayName(giftData.selectedUser)}\n` +
                             `💰 Сумма: ${giftData.amount} П-коинов\n` +
                             `💌 Сообщение: ${message || 'без сообщения'}\n\n` +
                             '🎊 Спасибо за щедрость!').catch(console.error);
@@ -2363,6 +3579,83 @@ function processGift(chatId, telegramId, giftData, message) {
     }
 }
 
+function showWallet(chatId, telegramId) {
+    db.get("SELECT wallet_address, p_coins, company_points FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: '💸 Отправить П-коины', callback_data: 'start_pcoin_transfer' },
+                    { text: '🏦 Обмен на баллы', callback_data: 'start_pcoin_exchange' }
+                ],
+                [
+                    { text: '🙏 Попросить П-коины', callback_data: 'start_pcoin_request' },
+                    { text: '🤝 Мой QR-код', callback_data: 'generate_my_qr' }
+                ]
+            ]
+        };
+
+        if (user.wallet_address) {
+            bot.sendMessage(chatId, 
+                `👛 **Ваш кошелек**\n\n` +
+                `**Адрес:** \`${user.wallet_address}\`\n` +
+                `**Баланс:** ${user.p_coins} П-коинов\n` +
+                `**Баллы:** ${user.company_points} баллов`,
+                { parse_mode: 'Markdown', reply_markup: keyboard }
+            );
+        } else {
+            const newAddress = generateWalletAddress();
+            db.run("UPDATE users SET wallet_address = ? WHERE telegram_id = ?", [newAddress, telegramId], (err) => {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка при создании кошелька. Попробуйте еще раз.');
+                    return;
+                }
+                bot.sendMessage(chatId, 
+                    `🎉 **Вам создан новый кошелек!**\n\n` +
+                    `**Адрес:** \`${newAddress}\`\n` +
+                    `**Баланс:** ${user.p_coins} П-коинов\n` +
+                    `**Баллы:** ${user.company_points} баллов`,
+                    { parse_mode: 'Markdown', reply_markup: keyboard }
+                );
+            });
+        }
+    });
+}
+
+function startPcoinTransfer(chatId, telegramId) {
+    global.userScreenshots[telegramId] = {
+        type: 'pcoin_transfer',
+        step: 'enter_wallet_address'
+    };
+    bot.sendMessage(chatId, 'Введите адрес кошелька получателя:');
+}
+
+function startPcoinRequest(chatId, telegramId) {
+    db.all(`SELECT * FROM users WHERE telegram_id != ? AND is_registered = 1 ORDER BY full_name`, [telegramId], (err, users) => {
+        if (err || !users || users.length === 0) {
+            bot.sendMessage(chatId, '❌ Не найдено других пользователей, у кого можно попросить П-коины.');
+            return;
+        }
+
+        let usersList = '🙏 У кого вы хотите попросить П-коины?\n\nВыберите пользователя из списка, написав его номер:\n\n';
+        users.forEach((u, index) => {
+            usersList += `${index + 1}. ${getUserDisplayName(u)}\n`;
+        });
+
+        global.userScreenshots[telegramId] = {
+            type: 'pcoin_request',
+            step: 'select_target',
+            users: users
+        };
+
+        bot.sendMessage(chatId, usersList);
+    });
+}
+
 // ========== ФУНКЦИИ ЗАДАЧ ==========
 
 function showMyTasks(chatId, telegramId) {
@@ -2374,39 +3667,42 @@ function showMyTasks(chatId, telegramId) {
                     u_creator.full_name as creator_name, u_creator.username as creator_username
                     FROM tasks t
                     LEFT JOIN users u_creator ON t.creator_id = u_creator.id
-                    WHERE t.assignee_id = ? AND t.status = 'pending'
-                    ORDER BY t.due_date ASC, t.priority DESC`, [user.id], (err, tasks) => {
+                    WHERE t.assignee_id = ? AND t.status IN ('pending', 'in_progress')
+                    ORDER BY t.status ASC, t.due_date ASC, t.priority DESC`, [user.id], (err, tasks) => {
 
                 if (!tasks || tasks.length === 0) {
                     bot.sendMessage(chatId,
                         '📝 МОИ ЗАДАЧИ 🎯\n\n' +
-                        '✅ Все задачи выполнены! 🎉\n\n' +
+                        '✅ Нет активных задач! 🎉\n\n' +
                         '🚀 Отличная работа! Можешь отдохнуть или взять новые задачи!').catch(console.error);
                     return;
                 }
 
-                let tasksText = '📝 МОИ АКТИВНЫЕ ЗАДАЧИ 🎯\n\n';
+                bot.sendMessage(chatId, '📝 МОИ АКТИВНЫЕ ЗАДАЧИ 🎯\n\n');
 
                 tasks.forEach((task, index) => {
                     const priority = task.priority === 'high' ? '🔴' : task.priority === 'medium' ? '🟡' : '🟢';
                     const creatorName = task.creator_name || task.creator_username || 'Система';
-                    const dueDate = task.due_date ? new Date(task.due_date).toLocaleDateString('ru-RU') : 'без срока';
+                    const dueDate = task.due_date ? new Date(task.due_date).toLocaleString('ru-RU') : 'без срока';
+                    const statusEmoji = task.status === 'in_progress' ? '▶️ В работе' : '⏳ Ожидает';
 
-                    tasksText += `${index + 1}. ${priority} ${task.title}\n`;
-                    tasksText += `   📝 ${task.description || 'Описание отсутствует'}\n`;
-                    tasksText += `   👤 От: ${creatorName}\n`;
-                    tasksText += `   📅 Срок: ${dueDate}\n`;
+                    let taskText = `${index + 1}. ${statusEmoji} ${priority} ${task.title}\n`;
+                    taskText += `   📝 ${task.description || 'Описание отсутствует'}\n`;
+                    taskText += `   👤 От: ${creatorName}\n`;
+                    taskText += `   📅 Срок: ${dueDate}\n`;
                     if (task.reward_coins > 0) {
-                        tasksText += `   💰 Награда: ${task.reward_coins} П-коинов\n`;
+                        taskText += `   💰 Награда: ${task.reward_coins} П-коинов\n`;
                     }
-                    tasksText += '\n';
+
+                    const keyboard = {
+                        inline_keyboard: [[{
+                            text: '✅ Завершить',
+                            callback_data: `complete_task_${task.id}`
+                        }]]
+                    };
+
+                    bot.sendMessage(chatId, taskText, { reply_markup: keyboard }).catch(console.error);
                 });
-
-                tasksText += '✅ Для завершения задачи напиши:\n';
-                tasksText += '"выполнил [номер]"\n';
-                tasksText += '💡 Например: "выполнил 1"';
-
-                bot.sendMessage(chatId, tasksText).catch(console.error);
             });
         });
     } catch (error) {
@@ -2478,7 +3774,7 @@ function startTaskCreation(chatId, telegramId) {
             db.all(`SELECT username, full_name, telegram_id, id
                     FROM users
                     WHERE telegram_id != ?
-                    AND is_registered = true
+                    AND is_registered = 1
                     ORDER BY full_name`, [telegramId], (err, users) => {
 
                 if (!users || users.length === 0) {
@@ -2549,36 +3845,23 @@ function showTeamTasks(chatId, telegramId) {
     }
 }
 
-function completeTask(chatId, telegramId, taskNumber) {
+function completeTask(chatId, telegramId, taskId) {
     try {
-        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) return;
 
-            db.all(`SELECT t.*,
-                    u_creator.full_name as creator_name, u_creator.username as creator_username
-                    FROM tasks t
-                    LEFT JOIN users u_creator ON t.creator_id = u_creator.id
-                    WHERE t.assignee_id = ? AND t.status = 'pending'
-                    ORDER BY t.due_date ASC, t.priority DESC`, [user.id], (err, tasks) => {
-
-                if (!tasks || tasks.length === 0) {
-                    bot.sendMessage(chatId, '📋 У тебя нет активных задач!').catch(console.error);
+            db.get("SELECT t.*, u_creator.full_name as creator_name, u_creator.username as creator_username FROM tasks t LEFT JOIN users u_creator ON t.creator_id = u_creator.id WHERE t.id = ? AND t.assignee_id = ?", [taskId, user.id], (err, task) => {
+                if (!task) {
+                    bot.sendMessage(chatId, '❌ Задача не найдена или у вас нет прав на ее завершение.');
                     return;
                 }
-
-                if (taskNumber < 1 || taskNumber > tasks.length) {
-                    bot.sendMessage(chatId,
-                        `❌ Неверный номер задачи!\n\n` +
-                        `🔢 Доступно задач: 1-${tasks.length}\n` +
-                        '💡 Например: "выполнил 1"').catch(console.error);
-                    return;
-                }
-
-                const task = tasks[taskNumber - 1];
 
                 // Отмечаем задачу как выполненную
                 db.run("UPDATE tasks SET status = 'completed', completed_date = CURRENT_TIMESTAMP WHERE id = ?",
-                       [task.id], () => {
+                       [taskId], () => {
+
+                    // Cancel any pending reminders for this task
+                    cancelTaskReminder(taskId);
 
                     // Начисляем награду если есть
                     if (task.reward_coins > 0) {
@@ -2596,10 +3879,10 @@ function completeTask(chatId, telegramId, taskNumber) {
 
                     // Уведомляем создателя задачи
                     if (task.creator_id && task.creator_id !== user.id) {
-                        db.get("SELECT telegram_id, full_name, username FROM users WHERE id = ?",
+                        db.get("SELECT * FROM users WHERE id = ?",
                                [task.creator_id], (err, creator) => {
                             if (creator) {
-                                const executorName = user.full_name || user.username || 'Сотрудник';
+                                const executorName = getUserDisplayName(user);
                                 bot.sendMessage(creator.telegram_id,
                                     `✅ ЗАДАЧА ВЫПОЛНЕНА! 🎉\n\n` +
                                     `📝 "${task.title}"\n` +
@@ -2633,7 +3916,7 @@ function showUserStats(chatId, telegramId) {
             
             const statsText = 
                 '📊 ТВОЯ СТАТИСТИКА 🎯\n\n' +
-                `👤 Имя: ${stats.full_name || stats.username}\n` +
+                `👤 Имя: ${getUserDisplayName(stats)}\n` +
                 `💰 П-коинов: ${stats.p_coins}\n` +
                 `⚡ Энергия: ${stats.energy}%\n` +
                 `🎭 Роль: ${stats.role}\n\n` +
@@ -2666,7 +3949,7 @@ function handleAdminLogin(chatId, telegramId) {
                 return;
             }
             
-            db.run("INSERT INTO admins (user_id, telegram_id) VALUES (?, ?)", 
+            db.run("INSERT OR REPLACE INTO admins (user_id, telegram_id) VALUES (?, ?)", 
                    [user.id, telegramId], () => {
                 bot.sendMessage(chatId, 
                     '🔑 ДОБРО ПОЖАЛОВАТЬ В АДМИНКУ! 👨‍💼\n\n' +
@@ -2992,10 +4275,10 @@ function handleAdminEventCreation(chatId, telegramId, text) {
                 
             case 'reward':
                 const reward = parseInt(text);
-                if (isNaN(reward) || reward < 1 || reward > 100) {
+                if (isNaN(reward) || reward < 0 || reward > 100) {
                     bot.sendMessage(chatId, 
                         '❌ Неверная награда!\n' +
-                        '💰 Введи число от 1 до 100').catch(console.error);
+                        '💰 Введи число от 0 до 100').catch(console.error);
                     return;
                 }
                 
@@ -3014,8 +4297,9 @@ function createEventSlot(chatId, telegramId, eventData) {
                 (event_name, category, date, time, location, max_participants, points_reward, status) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
                [eventData.name, eventData.category, eventData.date, eventData.time, 
-                eventData.location, eventData.maxParticipants, eventData.reward], () => {
+                eventData.location, eventData.maxParticipants, eventData.reward], function() { // Use function() to get 'this'
             
+            const newSlotId = this.lastID;
             delete global.adminStates[telegramId];
             
             bot.sendMessage(chatId, 
@@ -3026,10 +4310,51 @@ function createEventSlot(chatId, telegramId, eventData) {
                 `📍 Место: ${eventData.location}\n` +
                 `👥 Участников: ${eventData.maxParticipants}\n` +
                 `💰 Награда: ${eventData.reward} П-коинов\n\n` +
-                '🚀 Пользователи уже могут записываться!', adminKeyboard).catch(console.error);
+                '🚀 Начинаю рассылку уведомлений пользователям...', adminKeyboard).catch(console.error);
+
+            // Broadcast the new event to all users
+            broadcastNewEvent(newSlotId, eventData);
         });
     } catch (error) {
         console.error('❌ Create event slot error:', error);
+    }
+}
+
+function broadcastNewEvent(slotId, eventData) {
+    try {
+        db.all("SELECT telegram_id FROM users WHERE is_registered = 1", (err, users) => {
+            if (err || !users) {
+                console.error('Could not fetch users for event broadcast:', err);
+                return;
+            }
+
+            const dayOfWeek = getDayOfWeek(eventData.date);
+            const dateWithDay = dayOfWeek ? `${eventData.date} (${dayOfWeek})` : eventData.date;
+
+            const message = `📢 Новое мероприятие!\n\n` +
+                            `🎯 **${eventData.name}**\n\n` +
+                            `🗓️ ${dateWithDay} в ${eventData.time}\n\n` +
+                            `Хочешь поучаствовать?`;
+
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '✅ Записаться', callback_data: `signup_event_${slotId}` }
+                ]]
+            };
+
+            users.forEach(user => {
+                bot.sendMessage(user.telegram_id, message, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                }).catch(err => {
+                    console.error(`Failed to send event notification to ${user.telegram_id}:`, err.message);
+                });
+            });
+
+            console.log(`Broadcasted new event #${slotId} to ${users.length} users.`);
+        });
+    } catch (error) {
+        console.error('❌ Broadcast new event error:', error);
     }
 }
 
@@ -3212,7 +4537,7 @@ function setBroadcastTarget(chatId, telegramId, target) {
 
             if (target === 'selective') {
                 // Показываем список пользователей для выбора
-                db.all("SELECT username, full_name, telegram_id, role FROM users WHERE is_registered = true ORDER BY full_name", (err, users) => {
+                db.all("SELECT username, full_name, telegram_id, role FROM users WHERE is_registered = 1 ORDER BY full_name", (err, users) => {
                     if (!users || users.length === 0) {
                         bot.sendMessage(chatId, '👻 Нет пользователей!').catch(console.error);
                         return;
@@ -3306,18 +4631,18 @@ function sendBroadcast(chatId, telegramId, broadcastData, message) {
 
         if (broadcastData.target === 'selective') {
             const userIds = broadcastData.selectedUsers.map(u => u.telegram_id);
-            query = `SELECT telegram_id, full_name, username FROM users WHERE telegram_id IN (${userIds.map(() => '?').join(',')}) AND is_registered = true`;
+            query = `SELECT telegram_id, full_name, username FROM users WHERE telegram_id IN (${userIds.map(() => '?').join(',')}) AND is_registered = 1`;
             params = userIds;
         } else {
             switch (broadcastData.target) {
                 case 'all':
-                    query = 'SELECT telegram_id, full_name, username FROM users WHERE is_registered = true';
+                    query = 'SELECT telegram_id, full_name, username FROM users WHERE is_registered = 1';
                     break;
                 case 'seniors':
-                    query = "SELECT telegram_id, full_name, username FROM users WHERE role = 'старичок' AND is_registered = true";
+                    query = "SELECT telegram_id, full_name, username FROM users WHERE role = 'старичок' AND is_registered = 1";
                     break;
                 case 'interns':
-                    query = "SELECT telegram_id, full_name, username FROM users WHERE role = 'стажер' AND is_registered = true";
+                    query = "SELECT telegram_id, full_name, username FROM users WHERE role = 'стажер' AND is_registered = 1";
                     break;
             }
         }
@@ -3451,7 +4776,7 @@ function showUsersList(chatId, telegramId) {
                 return;
             }
             
-            db.all("SELECT * FROM users WHERE is_registered = true ORDER BY registration_date DESC", 
+            db.all("SELECT * FROM users WHERE is_registered = 1 ORDER BY registration_date DESC", 
                    (err, users) => {
                 
                 if (!users || users.length === 0) {
@@ -3463,7 +4788,7 @@ function showUsersList(chatId, telegramId) {
                 
                 users.forEach((user, index) => {
                     const roleEmoji = user.role === 'стажер' ? '👶' : '🧓';
-                    usersText += `${index + 1}. ${roleEmoji} ${user.full_name || user.username}\n`;
+                    usersText += `${index + 1}. ${roleEmoji} ${getUserDisplayName(user)}\n`;
                     usersText += `   💰 ${user.p_coins} П-коинов\n`;
                     usersText += `   📅 ${new Date(user.registration_date).toLocaleDateString('ru-RU')}\n\n`;
                 });
@@ -3474,6 +4799,46 @@ function showUsersList(chatId, telegramId) {
     } catch (error) {
         console.error('❌ Show users list error:', error);
     }
+}
+
+function showBugReports(chatId, telegramId) {
+    db.all(`SELECT br.*, u.username, u.full_name, u.role, u.position, u.position_level, u.registration_date, u.graduated_at
+            FROM bug_reports br
+            JOIN users u ON br.user_id = u.id 
+            ORDER BY br.submitted_date DESC`, (err, reports) => {
+        
+        if (err || !reports || reports.length === 0) {
+            bot.sendMessage(chatId, '🐞 Отчетов о багах пока нет.');
+            return;
+        }
+
+        bot.sendMessage(chatId, '🐞 Отчеты о багах:');
+
+        reports.forEach(report => {
+            const userName = getUserDisplayName(report);
+            let reportText = `**Отчет #${report.id}** от ${userName}\n\n` +
+                             `**Описание:** ${report.description}\n` +
+                             `**Статус:** ${report.status}`;
+
+            let keyboard = {};
+            if (report.status === 'pending') {
+                keyboard = {
+                    inline_keyboard: [[
+                        { text: '✅ Одобрить', callback_data: `approve_bug_${report.id}` },
+                        { text: '❌ Отклонить', callback_data: `reject_bug_${report.id}` }
+                    ]]
+                };
+            }
+
+            if (report.media_type === 'photo') {
+                bot.sendPhoto(chatId, report.media_file_id, { caption: reportText, parse_mode: 'Markdown', reply_markup: keyboard });
+            } else if (report.media_type === 'video') {
+                bot.sendVideo(chatId, report.media_file_id, { caption: reportText, parse_mode: 'Markdown', reply_markup: keyboard });
+            } else {
+                bot.sendMessage(chatId, reportText, { parse_mode: 'Markdown', reply_markup: keyboard });
+            }
+        });
+    });
 }
 
 function showAdminStats(chatId, telegramId) {
@@ -3487,10 +4852,10 @@ function showAdminStats(chatId, telegramId) {
             // Собираем общую статистику
             db.all(`
                 SELECT
-                    (SELECT COUNT(*) FROM users WHERE is_registered = true) as total_users,
-                    (SELECT COUNT(*) FROM users WHERE role = 'стажер' AND is_registered = true) as interns,
-                    (SELECT COUNT(*) FROM users WHERE role = 'старичок' AND is_registered = true) as seniors,
-                    (SELECT SUM(p_coins) FROM users WHERE is_registered = true) as total_coins,
+                    (SELECT COUNT(*) FROM users WHERE is_registered = 1) as total_users,
+                    (SELECT COUNT(*) FROM users WHERE role = 'стажер' AND is_registered = 1) as interns,
+                    (SELECT COUNT(*) FROM users WHERE role = 'старичок' AND is_registered = 1) as seniors,
+                    (SELECT SUM(p_coins) FROM users WHERE is_registered = 1) as total_coins,
                     (SELECT COUNT(*) FROM event_slots) as total_events,
                     (SELECT COUNT(*) FROM event_slots WHERE status = 'active') as active_events,
                     (SELECT COUNT(*) FROM event_bookings) as total_bookings,
@@ -3609,17 +4974,313 @@ bot.on('callback_query', (callbackQuery) => {
                 bot.editMessageText("❌ Создание инвойса отменено. Возврат в меню.", {chat_id: chatId, message_id: messageId}).catch(console.error);
                 backToMainMenu(chatId, telegramId);
             }
-        } else if (data.startsWith('approve_')) {
+        } else if (data.startsWith('approve_') && !data.startsWith('approve_bug_')) {
             const submissionId = data.split('_')[1];
             approveSubmission(chatId, messageId, telegramId, submissionId, callbackQuery.id);
-        } else if (data.startsWith('reject_')) {
+        } else if (data.startsWith('reject_') && !data.startsWith('reject_bug_')) {
             const submissionId = data.split('_')[1];
             rejectSubmission(chatId, messageId, telegramId, submissionId, callbackQuery.id);
-        } else if (data === 'confirm_reset_stats') {
-            confirmResetStats(query.message.chat.id, query.from.id, query.id, query.message.message_id);
-        } else if (data === 'cancel_reset_stats') {
-            bot.answerCallbackQuery(query.id, {text: '❌ Сброс статистики отменен.'});
-            bot.editMessageText('❌ Сброс статистики отменен.', {chat_id: query.message.chat.id, message_id: query.message.message_id});
+        } else if (data.startsWith('vac_approve_')) {
+            const requestId = data.split('_')[2];
+            approveVacationRequest(chatId, telegramId, parseInt(requestId));
+            bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заявка одобрена!' }).catch(console.error);
+            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(console.error);
+        } else if (data.startsWith('vac_reject_')) {
+            const requestId = data.split('_')[2];
+            const reason = 'Отклонено администратором';
+            rejectVacationRequest(chatId, telegramId, parseInt(requestId), reason);
+            bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Заявка отклонена!' }).catch(console.error);
+            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(console.error);
+        } else if (data.startsWith('signup_event_')) {
+            const slotId = data.split('_')[2];
+            db.get("SELECT * FROM event_slots WHERE id = ?", [slotId], (err, slot) => {
+                if (err || !slot) {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Мероприятие больше не доступно!', show_alert: true });
+                    return;
+                }
+                // The existing bookEventSlot function handles all logic and messaging
+                bookEventSlot(chatId, telegramId, slot);
+                bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Вы записаны!' });
+            });
+        } else if (data.startsWith('start_task_')) {
+            const taskId = data.split('_')[2];
+
+            db.get("SELECT * FROM tasks WHERE id = ? AND assignee_id = (SELECT id FROM users WHERE telegram_id = ?)", [taskId, telegramId], (err, task) => {
+                if (err || !task) {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Задача не найдена или уже не доступна.', show_alert: true });
+                    return;
+                }
+
+                if (task.status !== 'pending') {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: `⚠️ Задача уже в статусе: ${task.status}`, show_alert: true });
+                    return;
+                }
+
+                db.run("UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?", [taskId], function(err) {
+                    if (err) {
+                        bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка обновления задачи.', show_alert: true });
+                        return;
+                    }
+
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Задача начата!' });
+
+                    const newText = `🎯 **Задача в работе!**\n\n` +
+                                    `**Название:** ${task.title}\n` +
+                                    `**Описание:** ${task.description || 'Без описания'}`;
+                    
+                    const newKeyboard = {
+                        inline_keyboard: [[
+                            { text: '❌ Отменить выполнение', callback_data: `cancel_execution_task_${taskId}` }
+                        ]]
+                    };
+
+                    bot.editMessageText(newText, {
+                        chat_id: chatId,
+                        message_id: messageId,
+                        parse_mode: 'Markdown',
+                        reply_markup: newKeyboard // Add the new keyboard
+                    });
+
+                    // Notify creator
+                    if (task.creator_id) {
+                        db.get("SELECT telegram_id FROM users WHERE id = ?", [task.creator_id], (err, creator) => {
+                            if (creator && creator.telegram_id !== telegramId) {
+                                db.get("SELECT full_name FROM users WHERE telegram_id = ?", [telegramId], (err, assignee) => {
+                                    const assigneeName = assignee ? assignee.full_name : 'Исполнитель';
+                                    bot.sendMessage(creator.telegram_id, `▶️ **${assigneeName}** начал(а) выполнение задачи:\n*${task.title}*`, { parse_mode: 'Markdown' });
+                                });
+                            }
+                        });
+                    }
+                });
+            });
+        } else if (data.startsWith('cancel_execution_task_')) {
+            const taskId = data.split('_')[3]; // e.g., cancel_execution_task_123
+
+            db.get("SELECT * FROM tasks WHERE id = ? AND assignee_id = (SELECT id FROM users WHERE telegram_id = ?)", [taskId, telegramId], (err, task) => {
+                if (err || !task) {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Задача не найдена или у вас нет прав.', show_alert: true });
+                    return;
+                }
+
+                global.userScreenshots[telegramId] = {
+                    type: 'task_cancel',
+                    step: 'enter_reason',
+                    taskId: taskId // Store taskId for the next step
+                };
+
+                bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена задачи...' });
+                bot.editMessageText(`❌ Вы отменяете задачу: **${task.title}**.\n\nПожалуйста, укажите причину отмены:`, {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: [] } // Remove the button
+                });
+            });
+        } else if (data === 'confirm_template_task_final') {
+            const state = global.userScreenshots[telegramId];
+            if (!state || state.type !== 'task_from_template' || state.step !== 'confirm_task') {
+                bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сессия истекла!' });
+                return;
+            }
+
+            const task = state.taskData;
+            db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                if(err || !user) {
+                    bot.sendMessage(chatId, '❌ Ошибка пользователя!').catch(console.error);
+                    return;
+                }
+                task.creator_id = user.id;
+                
+                let dueDate = null;
+                if (task.due_date) {
+                    const parts = task.due_date.split(' ');
+                    const dateParts = parts[0].split('.');
+                    if (dateParts.length === 3) {
+                        dueDate = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
+                        if (parts.length > 1) {
+                            dueDate += ` ${parts[1]}`;
+                        }
+                    }
+                }
+
+                db.run(`INSERT INTO tasks (creator_id, assignee_id, title, description, priority, due_date, started_at)
+                        VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+                       [task.creator_id, task.assignee_id, task.title, task.description, 'high', dueDate], function() {
+                    
+                    const newTaskId = this.lastID;
+
+                    bot.sendMessage(chatId, '✅ Задача создана и отправлена исполнителю!', mainMenuKeyboard);
+                    
+                    db.get("SELECT telegram_id FROM users WHERE id = ?", [task.assignee_id], (err, assignee) => {
+                        if (assignee) {
+                            // Send media if it exists first
+                            if (task.media_type === 'photo') {
+                                bot.sendPhoto(assignee.telegram_id, task.media, { caption: task.description });
+                            } else if (task.media_type === 'video') {
+                                bot.sendVideo(assignee.telegram_id, task.media, { caption: task.description });
+                            }
+
+                            const priorityText = '🔴 Высокий'; // Template tasks are always high priority
+                            const dueDateText = dueDate ? new Date(dueDate).toLocaleString('ru-RU') : 'Без срока';
+
+                            const message = `🎯 **Новая задача!**\n\n` +
+                                            `**Название:** ${task.title}\n` +
+                                            `**Описание:** ${task.description || 'Без описания'}\n\n` +
+                                            `**Приоритет:** ${priorityText}\n` +
+                                            `**Срок выполнения:** ${dueDateText}\n\n` +
+                                            `Нажмите, чтобы начать отсчет времени.`;
+
+                            const keyboard = {
+                                inline_keyboard: [[
+                                    { text: '▶️ Начать выполнение', callback_data: `start_task_${newTaskId}` }
+                                ]]
+                            };
+
+                            bot.sendMessage(assignee.telegram_id, message, {
+                                parse_mode: 'Markdown',
+                                reply_markup: keyboard
+                            });
+                        }
+                    });
+
+                    delete global.userScreenshots[telegramId];
+                    bot.answerCallbackQuery(callbackQuery.id);
+                    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+                });
+            });
+
+        } else if (data === 'cancel_template_task_final') {
+            delete global.userScreenshots[telegramId];
+            bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Создание задачи отменено.' });
+            bot.editMessageText('Создание задачи отменено.', { chat_id: chatId, message_id: messageId });
+        } else if (data === 'show_bug_reports') {
+            showBugReports(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('approve_bug_')) {
+            console.log(`Approving bug: chatId=${chatId}, messageId=${messageId}`);
+            const reportId = data.split('_')[2];
+            db.get("SELECT * FROM bug_reports WHERE id = ?", [reportId], (err, report) => {
+                if (err || !report) {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Отчет не найден!' });
+                    return;
+                }
+                if (report.status !== 'pending') {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Этот отчет уже обработан!' });
+                    return;
+                }
+
+                const reward = 200; // Fixed reward
+                db.run("UPDATE bug_reports SET status = 'approved' WHERE id = ?", [reportId]);
+                db.run("UPDATE users SET p_coins = p_coins + ? WHERE id = ?", [reward, report.user_id]);
+
+                db.get("SELECT telegram_id FROM users WHERE id = ?", [report.user_id], (err, user) => {
+                    if (user) {
+                        bot.sendMessage(user.telegram_id, `🎉 Ваш отчет об ошибке #${reportId} был одобрен! Вы получили ${reward} П-коинов. Спасибо за вашу помощь!`);
+                    }
+                });
+
+                bot.answerCallbackQuery(callbackQuery.id, { text: `✅ Отчет одобрен! Пользователю начислено ${reward} П-коинов.` });
+                bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(console.error);
+            });
+        } else if (data.startsWith('reject_bug_')) {
+            console.log(`Rejecting bug: chatId=${chatId}, messageId=${messageId}`);
+            const reportId = data.split('_')[2];
+            db.get("SELECT * FROM bug_reports WHERE id = ?", [reportId], (err, report) => {
+                if (err || !report) {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Отчет не найден!' });
+                    return;
+                }
+                if (report.status !== 'pending') {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Этот отчет уже обработан!' });
+                    return;
+                }
+                db.run("UPDATE bug_reports SET status = 'rejected' WHERE id = ?", [reportId]);
+                bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Отчет об ошибке отклонен!' }).catch(console.error);
+                bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(console.error);
+            });
+        } else if (data === 'show_test_submissions') {
+            showTestSubmissions(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('complete_task_')) {
+            const taskId = data.split('_')[2];
+            completeTask(chatId, telegramId, parseInt(taskId));
+            bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Задача завершена!' }).catch(console.error);
+            bot.deleteMessage(chatId, messageId).catch(console.error);
+        } else if (data.startsWith('like_achievement_')) {
+            const achievementId = data.split('_')[2];
+            handleLikeAchievement(chatId, telegramId, parseInt(achievementId));
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('comment_achievement_')) {
+            const achievementId = data.split('_')[2];
+            startCommentAchievement(chatId, telegramId, parseInt(achievementId));
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'start_pcoin_transfer') {
+            startPcoinTransfer(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'start_pcoin_exchange') {
+            startPcoinExchange(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'start_pcoin_request') {
+            startPcoinRequest(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'generate_my_qr') {
+            generateUserQrCode(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('approve_pcoin_request_')) {
+            const requestId = data.split('_')[3];
+            db.get("SELECT * FROM pcoin_requests WHERE id = ?", [requestId], (err, request) => {
+                if (err || !request || request.status !== 'pending') {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Этот запрос уже неактивен.', show_alert: true });
+                    return;
+                }
+
+                db.get("SELECT * FROM users WHERE id = ?", [request.target_id], (err, targetUser) => {
+                    if (err || !targetUser || targetUser.p_coins < request.amount) {
+                        bot.answerCallbackQuery(callbackQuery.id, { text: '❌ У вас недостаточно П-коинов для этого перевода.', show_alert: true });
+                        return;
+                    }
+
+                    db.serialize(() => {
+                        db.run("UPDATE users SET p_coins = p_coins - ? WHERE id = ?", [request.amount, request.target_id]);
+                        db.run("UPDATE users SET p_coins = p_coins + ? WHERE id = ?", [request.amount, request.requester_id]);
+                        db.run("UPDATE pcoin_requests SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?", [requestId]);
+                    });
+
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Запрос одобрен!' });
+                    bot.editMessageText(`✅ Вы одобрили запрос на ${request.amount} П-коинов.`, { chat_id: chatId, message_id: messageId });
+
+                    db.get("SELECT telegram_id FROM users WHERE id = ?", [request.requester_id], (err, requester) => {
+                        if (requester) {
+                            bot.sendMessage(requester.telegram_id, `🎉 Ваш запрос на ${request.amount} П-коинов был одобрен пользователем ${targetUser.full_name}!`);
+                        }
+                    });
+                });
+            });
+        } else if (data.startsWith('decline_pcoin_request_')) {
+            const requestId = data.split('_')[3];
+            db.get("SELECT * FROM pcoin_requests WHERE id = ?", [requestId], (err, request) => {
+                if (err || !request || request.status !== 'pending') {
+                    bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Этот запрос уже неактивен.', show_alert: true });
+                    return;
+                }
+
+                db.run("UPDATE pcoin_requests SET status = 'declined', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?", [requestId]);
+
+                bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Запрос отклонен.' });
+                bot.editMessageText(`❌ Вы отклонили запрос на ${request.amount} П-коинов.`, { chat_id: chatId, message_id: messageId });
+
+                db.get("SELECT telegram_id, full_name FROM users WHERE id = ?", [request.target_id], (err, targetUser) => {
+                    db.get("SELECT telegram_id FROM users WHERE id = ?", [request.requester_id], (err, requester) => {
+                        if (requester) {
+                            bot.sendMessage(requester.telegram_id, `😔 Пользователь ${targetUser.full_name} отклонил ваш запрос на ${request.amount} П-коинов.`);
+                        }
+                    });
+                });
+            });
+        } else if (data === 'generate_my_qr') {
+            generateUserQrCode(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
         }
     } catch (error) {
         console.error('❌ Callback query error:', error);
@@ -3646,43 +5307,64 @@ function approveSubmission(chatId, messageId, adminTelegramId, submissionId, cal
                        [admin.user_id, submissionId], () => {
                     
                     // Начисляем П-коины пользователю
-                    db.run("UPDATE users SET p_coins = p_coins + ? WHERE telegram_id = ?", 
+                    db.run("UPDATE users SET p_coins = p_coins + ? WHERE telegram_id = ?",
                            [submission.points_claimed, submission.telegram_id], () => {
                         
-                        // Записываем прогресс стажера
-                        db.run(`INSERT INTO intern_progress
+                        // Записываем прогресс стажера с теми же баллами, которые ввел пользователь
+                        db.run(`INSERT OR REPLACE INTO intern_progress
                                 (user_id, test_name, completed, points_earned, completed_date)
                                 VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)`,
-                               [submission.user_id, submission.test_name, submission.points_claimed]);
+                               [submission.user_id, submission.test_name, submission.points_claimed], () => {
 
-                        // Проверяем, завершил ли пользователь все курсы для генерации сертификата
-                        db.get(`SELECT COUNT(*) as completed_courses FROM intern_progress WHERE user_id = ? AND completed = true`, [submission.user_id], (err, countResult) => {
-                            if (countResult && countResult.completed_courses >= 4) {
-                                // Получаем данные пользователя для сертификата
-                                db.get("SELECT full_name, username FROM users WHERE id = ?", [submission.user_id], (err, user) => {
-                                    if (user && !err) {
-                                        const userName = user.full_name || user.username || 'Участник';
-                                        const completionDate = new Date().toLocaleDateString('ru-RU');
+                            // Проверяем, не выпускник ли это
+                            db.get("SELECT role FROM users WHERE id = ?", [submission.user_id], (err, user) => {
+                                if (err || !user) return;
 
-                                        // Генерируем сертификат
-                                        generateCertificate(userName, '', completionDate).then(certificateBuffer => {
-                                            // Отправляем сертификат пользователю
-                                            bot.sendPhoto(submission.telegram_id, certificateBuffer, {
-                                                caption: `🎉 Поздравляем с успешным завершением всех курсов! 🏆\n\n📜 Ваш сертификат готов!`
-                                            }).catch(console.error);
-                                        }).catch(console.error);
-                                    }
-                                });
-                            }
+                                if (user.role === 'стажер') {
+                                    db.get("SELECT COUNT(*) as count FROM intern_progress WHERE user_id = ? AND completed = 1", [submission.user_id], (err, row) => {
+                                        if (err) {
+                                            console.error('Error counting completed tests:', err);
+                                            return;
+                                        }
+
+                                        if (row.count === 3) {
+                                            // Начисляем бонус за окончание стажировки
+                                            const graduationBonus = 400;
+                                            db.run("UPDATE users SET p_coins = p_coins + ? WHERE id = ?", [graduationBonus, submission.user_id]);
+
+                                            // Запускаем процесс выпуска
+                                            global.userScreenshots[submission.telegram_id] = {
+                                                type: 'graduation',
+                                                step: 'welcome_message'
+                                            };
+
+                                            bot.sendMessage(submission.telegram_id,
+                                                `🎉 Поздравляем! Ты прошел стажировку и теперь становишься полноправным членом команды! 🥳\n\n` +
+                                                `💰 В качестве бонуса тебе начислено ${graduationBonus} стартовых П-коинов!\n\n` +
+                                                'Тебе открыт весь функционал нашего бота. Можешь поздороваться с коллегами и написать приветственное сообщение, которое увидят все! 📣\n\n' +
+                                                'Напиши свое приветствие:'
+                                            ).catch(console.error);
+                                        } else {
+                                            // Обычное сообщение об одобрении
+                                            bot.sendMessage(submission.telegram_id, 
+                                                `🎉 ТЕСТ ОДОБРЕН! ✅\n\n` +
+                                                `📚 Тест: ${submission.test_name}\n` +
+                                                `💰 Получено: +${submission.points_claimed} П-коинов\n\n` +
+                                                '🏆 Отличная работа! Так держать! 💪\n' +
+                                                '🚀 Продолжай развиваться!').catch(console.error);
+                                        }
+                                    });
+                                } else {
+                                    // Обычное сообщение для не-стажеров
+                                    bot.sendMessage(submission.telegram_id, 
+                                        `🎉 ТЕСТ ОДОБРЕН! ✅\n\n` +
+                                        `📚 Тест: ${submission.test_name}\n` +
+                                        `💰 Получено: +${submission.points_claimed} П-коинов\n\n` +
+                                        '🏆 Отличная работа! Так держать! 💪\n' +
+                                        '🚀 Продолжай развиваться!').catch(console.error);
+                                }
+                            });
                         });
-
-                        // Уведомляем пользователя
-                        bot.sendMessage(submission.telegram_id, 
-                            `🎉 ТЕСТ ОДОБРЕН! ✅\n\n` +
-                            `📚 Тест: ${submission.test_name}\n` +
-                            `💰 Получено: +${submission.points_claimed} П-коинов\n\n` +
-                            '🏆 Отличная работа! Так держать! 💪\n' +
-                            '🚀 Продолжай развиваться!').catch(console.error);
                         
                         // Обновляем сообщение админа
                         bot.editMessageCaption(
@@ -3768,11 +5450,47 @@ function rejectSubmission(chatId, messageId, adminTelegramId, submissionId, call
     }
 }
 
-// ========== ОБРАБОТКА ОШИБОК И ЗАПУСК ==========
+// ========== ОБРАБОТКА ОШИБОК И ЗАПУСК ========== 
 
-console.log('🚀 Бот "Жизнь в Партнеркино" запускается...');
-console.log('🎯 Версия: Кнопочная 2.0');
+// Cron job to update intern roles to old-timers after 3 months
+cron.schedule('0 0 * * *', () => {
+    console.log('Running a daily cron job to update intern roles...');
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+    db.all("SELECT * FROM users WHERE role = 'стажер' AND registration_date <= ?", [threeMonthsAgo.toISOString()], (err, users) => {
+        if (err) {
+            console.error('Error fetching interns for role update:', err);
+            return;
+        }
+
+        if (users && users.length > 0) {
+            users.forEach(user => {
+                db.run("UPDATE users SET role = 'старичок' WHERE id = ?", [user.id], (err) => {
+                    if (err) {
+                        console.error(`Error updating role for user ${user.id}:`, err);
+                    } else {
+                        console.log(`User ${user.full_name} (${user.id}) has been promoted to 'старичок'.`);
+                        bot.sendMessage(user.telegram_id, 
+                            '🎉 Поздравляем! 🎉\n\n' +
+                            'Прошло 3 месяца с твоей регистрации, и теперь ты официально становишься "старичком" в нашей команде!\n\n' +
+                            'Спасибо за твою работу и вклад в нашу компанию! 💪'
+                        ).catch(console.error);
+                    }
+                });
+            });
+        }
+    });
+});
+
+// Cron job to automatically update user statuses
+cron.schedule('*/15 * * * *', updateUserStatusesCron);
+
+console.log('🚀 Бот "Жизнь в Партнеркине" запускается...');console.log('🎯 Версия: Кнопочная 2.0');
 console.log('📋 Ctrl+C для остановки');
+
+// Initialize task reminders from DB after a short delay
+setTimeout(initializeSchedules, 5000); // 5 second delay
 
 bot.on('error', (error) => {
     console.error('❌ Bot error:', error);
@@ -3791,6 +5509,53 @@ bot.on('polling_error', (error) => {
     }, 3000);
 });
 
+function updateUserStatusesCron() {
+    console.log('[CRON] Running job to update user statuses...');
+
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Set users to 'offline' if inactive for 2 days (and not already busy/offline)
+    db.run(`UPDATE users SET status = 'offline' 
+            WHERE last_activity < ? 
+            AND status NOT IN ('offline', 'busy')`, 
+            [twoDaysAgo], function() {
+        if (this.changes > 0) {
+            console.log(`[CRON] Set ${this.changes} users to 'offline'.`);
+        }
+    });
+
+    // Set 'online' users to 'away' if inactive for 1 hour (but less than 2 days)
+    db.run(`UPDATE users SET status = 'away' 
+            WHERE last_activity < ? 
+            AND last_activity >= ? 
+            AND status = 'online'`, 
+            [oneHourAgo, twoDaysAgo], function() {
+        if (this.changes > 0) {
+            console.log(`[CRON] Set ${this.changes} users to 'away'.`);
+        }
+    });
+}
+
+function initializeSchedules() {
+    console.log('[SCHEDULER] Initializing schedules for active tasks...');
+    db.all("SELECT id, reminder_interval_minutes, assignee_id, title FROM tasks WHERE status = 'in_progress' AND reminder_interval_minutes IS NOT NULL", (err, tasks) => {
+        if (err) {
+            console.error('[SCHEDULER] Error fetching tasks for schedule initialization:', err);
+            return;
+        }
+
+        if (tasks && tasks.length > 0) {
+            tasks.forEach(task => {
+                scheduleTaskReminder(task.id, task.reminder_interval_minutes, task.assignee_id, task.title);
+            });
+            console.log(`[SCHEDULER] Initialized ${tasks.length} task reminders.`);
+        } else {
+            console.log('[SCHEDULER] No active tasks with reminders to initialize.');
+        }
+    });
+}
+
 // ========== УЛУЧШЕННЫЕ ФУНКЦИИ ТАСК-ТРЕКЕРА ==========
 
 function handleTaskCreation(chatId, telegramId, text) {
@@ -3801,102 +5566,200 @@ function handleTaskCreation(chatId, telegramId, text) {
     try {
         const taskData = global.userScreenshots[telegramId];
 
-        if (taskData.step === 'select_assignee') {
-            const userIndex = parseInt(text) - 1;
+        switch (taskData.step) {
+            case 'select_assignee':
+                const userIndex = parseInt(text) - 1;
 
-            if (isNaN(userIndex) || userIndex < 0 || userIndex >= taskData.users.length) {
-                // [DEBUG LOG] Invalid assignee in task creation
-                console.log(`[TASK DEBUG] Invalid assignee index "${text}" for user ${telegramId}, users length: ${taskData.users.length}`);
-                bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
-                return;
-            }
-
-            taskData.taskData.assignee_id = taskData.users[userIndex].id;
-            taskData.taskData.assignee_name = taskData.users[userIndex].full_name || taskData.users[userIndex].username;
-            taskData.step = 'enter_title';
-
-            bot.sendMessage(chatId,
-                `👤 Исполнитель: ${taskData.taskData.assignee_name}\n\n` +
-                '📝 Напиши НАЗВАНИЕ задачи:\n' +
-                '💡 Например: "Подготовить отчет по продажам"').catch(console.error);
-
-        } else if (taskData.step === 'enter_title') {
-            taskData.taskData.title = text;
-            taskData.step = 'enter_description';
-
-            bot.sendMessage(chatId,
-                `📝 Название: "${text}"\n\n` +
-                '📋 Напиши ОПИСАНИЕ задачи:\n' +
-                '💡 Детально опиши что нужно сделать\n' +
-                '⚡ Или напиши "без описания"').catch(console.error);
-
-        } else if (taskData.step === 'enter_description') {
-            taskData.taskData.description = text === 'без описания' ? null : text;
-            taskData.step = 'select_priority';
-
-            bot.sendMessage(chatId,
-                `📋 Описание: ${taskData.taskData.description || 'Без описания'}\n\n` +
-                '🎯 Выбери ПРИОРИТЕТ задачи:', taskPriorityKeyboard).catch(console.error);
-
-        } else if (taskData.step === 'select_reward') {
-            taskData.step = 'enter_due_date';
-
-            bot.sendMessage(chatId,
-                `💰 Награда: ${taskData.taskData.reward_coins} П-коинов\n\n` +
-                '📅 Укажи СРОК выполнения:\n' +
-                '💡 Формат: ДД.ММ.ГГГГ (например: 25.12.2024)\n' +
-                '⚡ Или напиши "без срока"').catch(console.error);
-
-        } else if (taskData.step === 'enter_due_date') {
-            let dueDate = null;
-            if (text !== 'без срока') {
-                const dateMatch = text.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-                if (!dateMatch) {
-                    bot.sendMessage(chatId, '❌ Неверный формат даты! Используй ДД.ММ.ГГГГ или "без срока"').catch(console.error);
+                if (isNaN(userIndex) || userIndex < 0 || userIndex >= taskData.users.length) {
+                    console.log(`[TASK DEBUG] Invalid assignee index "${text}" for user ${telegramId}, users length: ${taskData.users.length}`);
+                    bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
                     return;
                 }
-                dueDate = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
-            }
 
-            taskData.taskData.due_date = dueDate;
+                taskData.taskData.assignee_id = taskData.users[userIndex].id;
+                taskData.taskData.assignee_name = getUserDisplayName(taskData.users[userIndex]);
+                taskData.step = 'enter_title';
+                bot.sendMessage(chatId, `👤 Исполнитель: ${taskData.taskData.assignee_name}\n\n📝 Напиши НАЗВАНИЕ задачи:`);
+                break;
 
-            // Создаем задачу в базе данных
-            db.run(`INSERT INTO tasks (creator_id, assignee_id, title, description, priority, reward_coins, due_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                   [taskData.taskData.creator_id, taskData.taskData.assignee_id, taskData.taskData.title,
-                    taskData.taskData.description, taskData.taskData.priority, taskData.taskData.reward_coins, dueDate], () => {
-
-                // Уведомляем создателя
+            case 'enter_title':
+                taskData.taskData.title = text;
+                taskData.step = 'enter_description';
                 bot.sendMessage(chatId,
-                    '✅ ЗАДАЧА СОЗДАНА! 🎉\n\n' +
-                    `👤 Исполнитель: ${taskData.taskData.assignee_name}\n` +
-                    `📝 Название: ${taskData.taskData.title}\n` +
-                    `📋 Описание: ${taskData.taskData.description || 'Без описания'}\n` +
-                    `🎯 Приоритет: ${taskData.taskData.priority === 'high' ? '🔴 Высокий' : taskData.taskData.priority === 'medium' ? '🟡 Средний' : '🟢 Низкий'}\n` +
-                    `💰 Награда: ${taskData.taskData.reward_coins} П-коинов\n` +
-                    `📅 Срок: ${text === 'без срока' ? 'Без срока' : text}\n\n` +
-                    '🚀 Исполнитель получит уведомление!', mainMenuKeyboard).catch(console.error);
+                    `📝 Название: "${text}"\n\n` +
+                    '📋 Напиши ОПИСАНИЕ задачи:\n' +
+                    '💡 Детально опиши что нужно сделать\n' +
+                    '⚡ Или напиши "без описания"').catch(console.error);
+                break;
 
-                // Уведомляем исполнителя
-                db.get("SELECT telegram_id FROM users WHERE id = ?", [taskData.taskData.assignee_id], (err, assignee) => {
-                    if (assignee) {
-                        bot.sendMessage(assignee.telegram_id,
-                            '🎯 НОВАЯ ЗАДАЧА! 📝\n\n' +
-                            `📝 Название: ${taskData.taskData.title}\n` +
-                            `📋 Описание: ${taskData.taskData.description || 'Без описания'}\n` +
-                            `🎯 Приоритет: ${taskData.taskData.priority === 'high' ? '🔴 Высокий' : taskData.taskData.priority === 'medium' ? '🟡 Средний' : '🟢 Низкий'}\n` +
-                            (taskData.taskData.reward_coins > 0 ? `💰 Награда: ${taskData.taskData.reward_coins} П-коинов\n` : '') +
-                            `📅 Срок: ${text === 'без срока' ? 'Без срока' : text}\n\n` +
-                            '📋 Проверь "Мои задачи" в меню!').catch(console.error);
+            case 'enter_description':
+                taskData.taskData.description = text === 'без описания' ? null : text;
+                taskData.step = 'select_priority';
+                bot.sendMessage(chatId,
+                    `📋 Описание: ${taskData.taskData.description || 'Без описания'}\n\n` +
+                    '🎯 Выбери ПРИОРИТЕТ задачи:', taskPriorityKeyboard).catch(console.error);
+                break;
+
+            case 'select_priority': // This case is handled by setTaskPriority, but as a fallback
+                bot.sendMessage(chatId, 'Пожалуйста, используйте кнопки для выбора приоритета.', taskPriorityKeyboard).catch(console.error);
+                break;
+
+            case 'select_reward': // This case is handled by setTaskReward, but as a fallback
+                bot.sendMessage(chatId, 'Пожалуйста, используйте кнопки для выбора награды.', taskRewardKeyboard).catch(console.error);
+                break;
+
+            case 'enter_due_date':
+                let dueDate = null;
+                if (text.toLowerCase() === 'без срока') {
+                    taskData.taskData.due_date = null;
+                } else {
+                    // Try parsing with chrono
+                    const parsedDate = chrono.ru.parseDate(text, new Date(), { forwardDate: true });
+
+                    if (parsedDate) {
+                        // Format to YYYY-MM-DD HH:MM:SS
+                        dueDate = parsedDate.toISOString();
+                    } else {
+                        // Fallback to regex if chrono fails
+                        const dateMatch = text.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+                        if (!dateMatch) {
+                            bot.sendMessage(chatId, '❌ Неверный формат даты! Попробуйте, например, "завтра в 18:00" или укажите дату в формате ДД.ММ.ГГГГ.').catch(console.error);
+                            return;
+                        }
+                        dueDate = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
                     }
-                });
+                    taskData.taskData.due_date = dueDate;
+                }
 
-                delete global.userScreenshots[telegramId];
-            });
+                taskData.step = 'ask_for_reminders';
+
+                const reminderQuestionKeyboard = {
+                    reply_markup: {
+                        keyboard: [
+                            ['Да, нужно', 'Нет, спасибо']
+                        ],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                };
+
+                bot.sendMessage(chatId, 'Нужно ли будет напоминать о задаче?', reminderQuestionKeyboard);
+                break;
+
+            case 'ask_for_reminders':
+                if (text === 'Нет, спасибо') {
+                    taskData.taskData.reminder_interval_minutes = null;
+                    finalizeTaskCreation(chatId, telegramId);
+                } else if (text === 'Да, нужно') {
+                    taskData.step = 'select_reminder_interval';
+                    const reminderIntervalKeyboard = {
+                        reply_markup: {
+                            keyboard: [['Каждый час', 'Каждые 3 часа'], ['Свой интервал', '❌ Отмена']],
+                            resize_keyboard: true, one_time_keyboard: true
+                        }
+                    };
+                    bot.sendMessage(chatId, 'Как часто напоминать о задаче?', reminderIntervalKeyboard);
+                }
+                break;
+
+            case 'select_reminder_interval':
+                if (text === '❌ Отмена') {
+                    delete global.userScreenshots[telegramId];
+                    showTasksMenu(chatId, telegramId);
+                    return;
+                }
+
+                if (text === 'Каждый час') {
+                    taskData.taskData.reminder_interval_minutes = 60;
+                    finalizeTaskCreation(chatId, telegramId);
+                } else if (text === 'Каждые 3 часа') {
+                    taskData.taskData.reminder_interval_minutes = 180;
+                    finalizeTaskCreation(chatId, telegramId);
+                } else if (text === 'Свой интервал') {
+                    taskData.step = 'enter_custom_interval';
+                    bot.sendMessage(chatId, 'Введите интервал напоминаний в минутах:');
+                }
+                break;
+
+            case 'enter_custom_interval':
+                const interval = parseInt(text);
+                if (isNaN(interval) || interval <= 0) {
+                    bot.sendMessage(chatId, '❌ Введите корректное число (больше 0).');
+                    return;
+                }
+                taskData.taskData.reminder_interval_minutes = interval;
+                finalizeTaskCreation(chatId, telegramId);
+                break;
         }
     } catch (error) {
         console.error('❌ Handle task creation error:', error);
     }
+}
+
+function finalizeTaskCreation(chatId, telegramId) {
+    const taskData = global.userScreenshots[telegramId];
+    if (!taskData) return;
+
+    const { creator_id, assignee_id, title, description, priority, reward_coins, due_date, reminder_interval_minutes } = taskData.taskData;
+
+    db.run(`INSERT INTO tasks (creator_id, assignee_id, title, description, priority, reward_coins, due_date, reminder_interval_minutes, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [creator_id, assignee_id, title, description, priority, reward_coins, due_date, reminder_interval_minutes || null], function(err) {
+        
+        if (err) {
+            console.error('Task creation DB error:', err);
+            bot.sendMessage(chatId, '❌ Ошибка создания задачи в базе данных!');
+            delete global.userScreenshots[telegramId];
+            return;
+        }
+
+        const newTaskId = this.lastID;
+
+        // Schedule reminder if needed
+        if (reminder_interval_minutes && reminder_interval_minutes > 0) {
+            scheduleTaskReminder(newTaskId, reminder_interval_minutes, assignee_id, title);
+        }
+
+        // Уведомляем создателя
+        bot.sendMessage(chatId,
+            '✅ ЗАДАЧА СОЗДАНА! 🎉\n\n' +
+            `👤 Исполнитель: ${taskData.taskData.assignee_name}\n` +
+            `📝 Название: ${title}\n` +
+            `📋 Описание: ${description || 'Без описания'}\n` +
+            `🎯 Приоритет: ${priority === 'high' ? '🔴 Высокий' : priority === 'medium' ? '🟡 Средний' : '🟢 Низкий'}\n` +
+            `💰 Награда: ${reward_coins} П-коинов\n` +
+            `📅 Срок: ${due_date ? new Date(due_date).toLocaleString('ru-RU') : 'Без срока'}\n` +
+            (reminder_interval_minutes ? `⏰ Напоминание: каждые ${reminder_interval_minutes} мин.\n` : '') +
+            '\n🚀 Исполнитель получит уведомление!', mainMenuKeyboard).catch(console.error);
+
+        // Уведомляем исполнителя
+        db.get("SELECT telegram_id FROM users WHERE id = ?", [assignee_id], (err, assignee) => {
+            if (assignee) {
+                const priorityText = priority === 'high' ? '🔴 Высокий' : priority === 'medium' ? '🟡 Средний' : '🟢 Низкий';
+                const dueDateText = due_date ? new Date(due_date).toLocaleString('ru-RU') : 'Без срока';
+
+                const message = `🎯 **Новая задача!**\n\n` +
+                                `**Название:** ${title}\n` +
+                                `**Описание:** ${description || 'Без описания'}\n\n` +
+                                `**Приоритет:** ${priorityText}\n` +
+                                `**Срок выполнения:** ${dueDateText}\n\n` +
+                                `Нажмите, чтобы начать отсчет времени.`;
+
+                const keyboard = {
+                    inline_keyboard: [[
+                        { text: '▶️ Начать выполнение', callback_data: `start_task_${newTaskId}` }
+                    ]]
+                };
+
+                bot.sendMessage(assignee.telegram_id, message, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+            }
+        });
+
+        delete global.userScreenshots[telegramId];
+    });
 }
 
 function setTaskPriority(chatId, telegramId, priority) {
@@ -4075,9 +5938,16 @@ function postponeTask(chatId, telegramId) {
 }
 
 function cancelTask(chatId, telegramId) {
+    const currentState = global.userScreenshots[telegramId];
+    if (!currentState || !currentState.taskId) {
+        bot.sendMessage(chatId, '❌ Сначала нужно выбрать задачу для отмены.');
+        return;
+    }
+
     global.userScreenshots[telegramId] = {
         type: 'task_cancel',
-        step: 'enter_reason'
+        step: 'enter_reason',
+        taskId: currentState.taskId // Preserve the taskId
     };
 
     bot.sendMessage(chatId,
@@ -4259,7 +6129,7 @@ function publishAchievement(chatId, telegramId) {
 function broadcastAchievement(achievementId, author, achievementData) {
     try {
         // Получаем всех пользователей
-        db.all("SELECT telegram_id, full_name, username FROM users WHERE is_registered = true AND telegram_id != ?",
+        db.all("SELECT * FROM users WHERE is_registered = 1 AND telegram_id != ?",
                [author.telegram_id], (err, users) => {
 
             if (err || !users) {
@@ -4267,25 +6137,31 @@ function broadcastAchievement(achievementId, author, achievementData) {
                 return;
             }
 
-            const authorName = author.full_name || author.username || 'Коллега';
+            const authorName = getUserDisplayName(author);
             const achievementText = `🎉 ДОСТИЖЕНИЕ КОЛЛЕГИ! 🏆\n\n` +
                                   `👤 ${authorName}\n` +
                                   `🏆 ${achievementData.title}\n` +
                                   (achievementData.description ? `📝 ${achievementData.description}\n\n` : '\n') +
-                                  `👍 Поставь лайк: /like_${achievementId}\n` +
-                                  `💬 Комментарий: /comment_${achievementId}\n\n` +
                                   '🔥 Поздравим коллегу с успехом!';
+
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '👍 Лайк', callback_data: `like_achievement_${achievementId}` },
+                    { text: '💬 Комментировать', callback_data: `comment_achievement_${achievementId}` }
+                ]]
+            };
 
             // Отправляем всем пользователям
             users.forEach(user => {
                 if (achievementData.photoFileId) {
                     // Отправляем с фото
                     bot.sendPhoto(user.telegram_id, achievementData.photoFileId, {
-                        caption: achievementText
+                        caption: achievementText,
+                        reply_markup: keyboard
                     }).catch(console.error);
                 } else {
                     // Отправляем только текст
-                    bot.sendMessage(user.telegram_id, achievementText).catch(console.error);
+                    bot.sendMessage(user.telegram_id, achievementText, { reply_markup: keyboard }).catch(console.error);
                 }
             });
 
@@ -4296,6 +6172,147 @@ function broadcastAchievement(achievementId, author, achievementData) {
     }
 }
 
+function broadcastWelcomeMessage(senderTelegramId, senderUsername, message) {
+    db.get("SELECT * FROM users WHERE telegram_id = ?", [senderTelegramId], (err, sender) => {
+        if (err) {
+            console.error('Error getting sender name for welcome message:', err);
+            return;
+        }
+        const senderName = getUserDisplayName(sender);
+
+        db.all("SELECT telegram_id FROM users WHERE is_registered = 1 AND telegram_id != ?", [senderTelegramId], (err, users) => {
+            if (err) {
+                console.error('Error getting users for welcome message broadcast:', err);
+                return;
+            }
+
+            const welcomeText = `🎉 Давайте поприветствуем нового члена команды! 🥳\n\n` +
+                                `**${senderName}** передает вам:\n\n` +
+                                `_"${message}"_`;
+
+            users.forEach(user => {
+                bot.sendMessage(user.telegram_id, welcomeText, { parse_mode: 'Markdown' }).catch(err => {
+                    console.error(`Failed to send welcome message to ${user.telegram_id}:`, err);
+                });
+            });
+        });
+    });
+}
+
+function notifyAdminsOfGraduation(userTelegramId, username) {
+    db.get("SELECT * FROM users WHERE telegram_id = ?", [userTelegramId], (err, user) => {
+        if (err) {
+            console.error('Error getting user name for admin notification:', err);
+            return;
+        }
+        const userName = getUserDisplayName(user);
+
+        db.all("SELECT telegram_id FROM admins", (err, admins) => {
+            if (err) {
+                console.error('Error getting admins for graduation notification:', err);
+                return;
+            }
+
+            const notificationText = `🎓 Стажер **${userName}** (@${username}) прошел стажировку и стал членом нашей компании!`;
+
+            admins.forEach(admin => {
+                bot.sendMessage(admin.telegram_id, notificationText, { parse_mode: 'Markdown' }).catch(err => {
+                    console.error(`Failed to send graduation notification to admin ${admin.telegram_id}:`, err);
+                });
+            });
+        });
+    });
+}
+
+function notifyAdminsOfVacationRequest(requestId, user, request) {
+    db.all("SELECT telegram_id FROM admins", (err, admins) => {
+        if (err) {
+            console.error('Error getting admins for vacation notification:', err);
+            return;
+        }
+
+        const userName = getUserDisplayName(user);
+        const notificationText = `🏖️ Новая заявка на отпуск от **${userName}**!\n\n` +
+                               `**Период:** ${request.start_date} - ${request.end_date} (${request.days_count} дн.)\n` +
+                               `**Тип:** ${request.vacation_type}\n` +
+                               (request.reason ? `**Причина:** ${request.reason}\n\n` : '\n') +
+                               `Что будем делать?`;
+
+        const keyboard = {
+            inline_keyboard: [[
+                { text: '✅ Одобрить', callback_data: `vac_approve_${requestId}` },
+                { text: '❌ Отклонить', callback_data: `vac_reject_${requestId}` }
+            ]]
+        };
+
+        admins.forEach(admin => {
+            bot.sendMessage(admin.telegram_id, notificationText, { 
+                parse_mode: 'Markdown',
+                reply_markup: keyboard 
+            }).catch(err => {
+                console.error(`Failed to send vacation notification to admin ${admin.telegram_id}:`, err);
+            });
+        });
+    });
+}
+
+function notifyAdminsOfInternCompletion(user) {
+    db.all("SELECT telegram_id FROM admins", (err, admins) => {
+        if (err) {
+            console.error('Error getting admins for intern completion notification:', err);
+            return;
+        }
+
+        const userName = getUserDisplayName(user);
+        const notificationText = `🎓 Стажер **${userName}** (@${user.username}) прошел все тесты и ожидает проверки!`;
+
+        const keyboard = {
+            inline_keyboard: [[{
+                text: 'Перейти к просмотру результатов',
+                callback_data: 'show_test_submissions'
+            }]]
+        };
+
+        admins.forEach(admin => {
+            bot.sendMessage(admin.telegram_id, notificationText, { 
+                parse_mode: 'Markdown',
+                reply_markup: keyboard 
+            }).catch(err => {
+                console.error(`Failed to send intern completion notification to admin ${admin.telegram_id}:`, err);
+            });
+        });
+    });
+}
+
+function notifyAdminsOfBugReport(user, description, reportId) {
+    db.all("SELECT telegram_id FROM admins", (err, admins) => {
+        if (err) {
+            console.error('Error getting admins for bug report notification:', err);
+            return;
+        }
+
+        const userName = getUserDisplayName(user);
+        const notificationText = `🐞 Новый отчет о баге от **${userName}**!\n\n` +
+                               `**Описание:** ${description}`;
+
+        const keyboard = {
+            inline_keyboard: [[{
+                text: 'Посмотреть отчеты',
+                callback_data: 'show_bug_reports'
+            }]]
+        };
+
+        admins.forEach(admin => {
+            bot.sendMessage(admin.telegram_id, notificationText, { 
+                parse_mode: 'Markdown',
+                reply_markup: keyboard 
+            }).catch(err => {
+                console.error(`Failed to send bug report notification to admin ${admin.telegram_id}:`, err);
+            });
+        });
+    });
+}
+
 function showAchievementsAdmin(chatId, telegramId) {
     try {
         db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
@@ -4304,7 +6321,7 @@ function showAchievementsAdmin(chatId, telegramId) {
                 return;
             }
 
-            db.all(`SELECT a.*, u.full_name, u.username,
+            db.all(`SELECT a.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at,
                     (SELECT COUNT(*) FROM achievement_likes al WHERE al.achievement_id = a.id) as likes_count,
                     (SELECT COUNT(*) FROM achievement_comments ac WHERE ac.achievement_id = a.id) as comments_count
                     FROM achievements a
@@ -4323,7 +6340,7 @@ function showAchievementsAdmin(chatId, telegramId) {
                 let achievementsText = '🎉 ПОСЛЕДНИЕ ДОСТИЖЕНИЯ 🏆\n\n';
 
                 achievements.forEach((achievement, index) => {
-                    const userName = achievement.full_name || achievement.username || 'Неизвестный';
+                    const userName = getUserDisplayName(achievement);
                     const date = new Date(achievement.created_date).toLocaleDateString('ru-RU');
 
                     achievementsText += `${index + 1}. ${achievement.title}\n`;
@@ -4345,7 +6362,7 @@ function showAchievementsAdmin(chatId, telegramId) {
 
 function handleLikeAchievement(chatId, telegramId, achievementId) {
     try {
-        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) {
                 bot.sendMessage(chatId, '❌ Пользователь не найден!').catch(console.error);
                 return;
@@ -4378,7 +6395,7 @@ function handleLikeAchievement(chatId, telegramId, achievementId) {
 
                         if (achievement && achievement.author_telegram_id !== telegramId) {
                             // Уведомляем автора достижения
-                            const likerName = user.full_name || user.username || 'Коллега';
+                            const likerName = getUserDisplayName(user);
                             bot.sendMessage(achievement.author_telegram_id,
                                 `👍 Новый лайк! 🎉\n\n` +
                                 `👤 ${likerName} поставил лайк твоему достижению:\n` +
@@ -4424,7 +6441,7 @@ function handleAchievementComment(chatId, telegramId, text) {
     try {
         const commentData = global.userScreenshots[telegramId];
 
-        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             if (!user) {
                 bot.sendMessage(chatId, '❌ Пользователь не найден!').catch(console.error);
                 return;
@@ -4448,7 +6465,7 @@ function handleAchievementComment(chatId, telegramId, text) {
 
                     if (achievement && achievement.author_telegram_id !== telegramId) {
                         // Уведомляем автора достижения
-                        const commenterName = user.full_name || user.username || 'Коллега';
+                        const commenterName = getUserDisplayName(user);
                         bot.sendMessage(achievement.author_telegram_id,
                             `💬 Новый комментарий! 📝\n\n` +
                             `👤 ${commenterName} прокомментировал твое достижение:\n` +
@@ -4477,7 +6494,7 @@ function showBalances(chatId, telegramId) {
                 return;
             }
 
-            db.all("SELECT username, full_name, p_coins FROM users WHERE is_registered = true ORDER BY p_coins DESC",
+            db.all("SELECT username, full_name, p_coins, role, position, position_level, registration_date, graduated_at FROM users WHERE is_registered = 1 ORDER BY p_coins DESC",
                    (err, users) => {
 
                 if (!users || users.length === 0) {
@@ -4489,7 +6506,7 @@ function showBalances(chatId, telegramId) {
                 const medals = ['🥇', '🥈', '🥉'];
 
                 users.forEach((user, index) => {
-                    const name = user.full_name || user.username || 'Неизвестный';
+                    const name = getUserDisplayName(user);
                     const medal = index < 3 ? medals[index] : `${index + 1}.`;
                     balancesText += `${medal} ${name} - ${user.p_coins} П-коинов\n`;
                 });
@@ -4512,7 +6529,7 @@ function startAddCoins(chatId, telegramId) {
                 return;
             }
 
-            db.all("SELECT id, username, full_name, telegram_id FROM users WHERE is_registered = true ORDER BY full_name", (err, users) => {
+            db.all("SELECT id, username, full_name, telegram_id, role, position, position_level, registration_date, graduated_at FROM users WHERE is_registered = 1 ORDER BY full_name", (err, users) => {
                 if (!users || users.length === 0) {
                     bot.sendMessage(chatId, '👻 Нет пользователей для начисления!').catch(console.error);
                     return;
@@ -4529,7 +6546,7 @@ function startAddCoins(chatId, telegramId) {
                 usersList += 'Выбери пользователя:\n\n';
 
                 users.forEach((user, index) => {
-                    const name = user.full_name || user.username || 'Неизвестный';
+                    const name = getUserDisplayName(user);
                     usersList += `${index + 1}. ${name} (@${user.username})\n`;
                 });
 
@@ -4551,7 +6568,7 @@ function startDeductCoins(chatId, telegramId) {
                 return;
             }
 
-            db.all("SELECT id, username, full_name, telegram_id FROM users WHERE is_registered = true ORDER BY full_name", (err, users) => {
+            db.all("SELECT id, username, full_name, telegram_id, role, position, position_level, registration_date, graduated_at FROM users WHERE is_registered = 1 ORDER BY full_name", (err, users) => {
                 if (!users || users.length === 0) {
                     bot.sendMessage(chatId, '👻 Нет пользователей для списания!').catch(console.error);
                     return;
@@ -4568,7 +6585,7 @@ function startDeductCoins(chatId, telegramId) {
                 usersList += 'Выбери пользователя:\n\n';
 
                 users.forEach((user, index) => {
-                    const name = user.full_name || user.username || 'Неизвестный';
+                    const name = getUserDisplayName(user);
                     usersList += `${index + 1}. ${name} (@${user.username})\n`;
                 });
 
@@ -4604,7 +6621,7 @@ function handleBalanceAdd(chatId, telegramId, text) {
             addData.step = 'enter_amount';
 
             bot.sendMessage(chatId,
-                `➕ Начислить баллы пользователю: ${addData.selectedUser.full_name || addData.selectedUser.username}\n\n` +
+                `➕ Начислить баллы пользователю: ${getUserDisplayName(addData.selectedUser)}\n\n` +
                 '💰 Сколько баллов начислить?\n' +
                 '🔢 Напиши положительное число:').catch(console.error);
 
@@ -4631,7 +6648,7 @@ function handleBalanceAdd(chatId, telegramId, text) {
                     // Уведомляем админа
                     bot.sendMessage(chatId,
                         `✅ БАЛЛЫ НАЧИСЛЕНЫ! 💰\n\n` +
-                        `👤 ${addData.selectedUser.full_name || addData.selectedUser.username}\n` +
+                        `👤 ${getUserDisplayName(addData.selectedUser)}\n` +
                         `➕ +${amount} П-коинов\n\n` +
                         '🎉 Операция завершена!', balanceKeyboard).catch(console.error);
 
@@ -4668,7 +6685,7 @@ function handleBalanceDeduct(chatId, telegramId, text) {
             deductData.step = 'enter_amount';
 
             bot.sendMessage(chatId,
-                `➖ Списать баллы у пользователя: ${deductData.selectedUser.full_name || deductData.selectedUser.username}\n\n` +
+                `➖ Списать баллы у пользователя: ${getUserDisplayName(deductData.selectedUser)}\n\n` +
                 '💸 Сколько баллов списать?\n' +
                 '🔢 Напиши положительное число:').catch(console.error);
 
@@ -4702,7 +6719,7 @@ function handleBalanceDeduct(chatId, telegramId, text) {
                         // Уведомляем админа
                         bot.sendMessage(chatId,
                             `✅ БАЛЛЫ СПИСАНЫ! 💸\n\n` +
-                            `👤 ${deductData.selectedUser.full_name || deductData.selectedUser.username}\n` +
+                            `👤 ${getUserDisplayName(deductData.selectedUser)}\n` +
                             `➖ -${amount} П-коинов\n\n` +
                             '🎯 Операция завершена!', balanceKeyboard).catch(console.error);
 
@@ -4716,118 +6733,18 @@ function handleBalanceDeduct(chatId, telegramId, text) {
     }
 }
 
-function handleResetStats(chatId, telegramId) {
-    db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
-        if (!admin) {
-            bot.sendMessage(chatId, '❌ Доступ запрещен! Только для администраторов.').catch(console.error);
-            return;
-        }
-
-        bot.sendMessage(chatId,
-            '⚠️ ВНИМАНИЕ: СБРОС СТАТИСТИКИ ⚠️\n\n' +
-            'Эта операция удалит ВСЕ записи из следующих таблиц:\n' +
-            '• intern_progress (прогресс стажеров)\n' +
-            '• test_submissions (заявки на тесты)\n' +
-            '• battles (PVP битвы)\n' +
-            '• purchases (покупки в магазине)\n' +
-            '• event_bookings (записи на мероприятия)\n' +
-            '• gifts (подарки коинов)\n' +
-            '• tasks (задачи)\n' +
-            '• achievements (достижения)\n' +
-            '• task_comments (комментарии к задачам)\n' +
-            '• achievement_likes (лайки достижений)\n' +
-            '• achievement_comments (комментарии к достижениям)\n' +
-            '• invoices (инвойсы)\n' +
-            '• company_contacts (контакты компаний)\n\n' +
-            '👤 Пользователи и администраторы останутся нетронутыми.\n\n' +
-            '❓ Вы уверены, что хотите продолжить?', {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{text: '✅ Да, сбросить статистику', callback_data: 'confirm_reset_stats'}],
-                        [{text: '❌ Отмена', callback_data: 'cancel_reset_stats'}]
-                    ]
-                }
-            }).catch(console.error);
-    });
-}
-
-function confirmResetStats(chatId, telegramId, callbackQueryId, messageId) {
-    db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
-        if (!admin) {
-            bot.answerCallbackQuery(callbackQueryId, {text: '❌ Доступ запрещен!'});
-            return;
-        }
-
-        const tablesToReset = [
-            'intern_progress',
-            'test_submissions',
-            'battles',
-            'purchases',
-            'event_bookings',
-            'gifts',
-            'tasks',
-            'achievements',
-            'task_comments',
-            'achievement_likes',
-            'achievement_comments',
-            'invoices',
-            'company_contacts'
-        ];
-
-        let completed = false;
-        const total = tablesToReset.length;
-
-        tablesToReset.forEach(table => {
-            db.run(`DELETE FROM ${table}`, (err) => {
-                if (err) {
-                    console.error(`Error deleting from ${table}:`, err);
-                }
-                completed++;
-                if (completed === total) {
-                    bot.answerCallbackQuery(callbackQueryId, {text: '✅ Статистика сброшена!'});
-                    bot.editMessageText(
-                        '✅ СТАТИСТИКА СБРОШЕНА! ✅\n\n' +
-                        'Все записи из указанных таблиц удалены.\n' +
-                        'Пользователи и администраторы остались нетронутыми.',
-                        {chat_id: chatId, message_id: messageId}
-                    );
-                }
-            });
-        });
-    });
-}
-
 process.on('SIGINT', () => {
     console.log('\n⏹️ Останавливаю бот...');
     console.log('💾 Закрываю базу данных...');
-    
-    // Закрываем PostgreSQL клиент если это подключение к PostgreSQL
-    const dbType = require('./config').DATABASE.type;
-    if (dbType === 'postgresql') {
-        // Если db - это наш универсальный модуль, проверим наличие метода end
-        if (typeof db.end === 'function') {
-            db.end(() => {
-                console.log('✅ База данных закрыта успешно');
-                console.log('👋 Бот остановлен! До встречи!');
-                process.exit(0);
-            });
+    db.close((err) => {
+        if (err) {
+            console.error('❌ Ошибка закрытия БД:', err.message);
         } else {
             console.log('✅ База данных закрыта успешно');
-            console.log('👋 Бот остановлен! До встречи!');
-            process.exit(0);
         }
-    } else {
-        // Для SQLite используем старую логику
-        db.close((err) => {
-            if (err) {
-                console.error('❌ Ошибка закрытия БД:', err.message);
-            } else {
-                console.log('✅ База данных закрыта успешно');
-            }
-            console.log('👋 Бот остановлен! До встречи!');
-            process.exit(0);
-        });
-    }
+        console.log('👋 Бот остановлен! До встречи!');
+        process.exit(0);
+    });
 });
 
 // ========== ФУНКЦИИ УПРАВЛЕНИЯ КОНТАКТАМИ ==========
@@ -4838,11 +6755,20 @@ function startContactSearch(chatId, telegramId) {
         step: 'enter_company'
     };
 
+    const contactSearchKeyboard = {
+        reply_markup: {
+            keyboard: [
+                ['➕ Добавить контакт'],
+                ['🔙 Назад в меню']
+            ],
+            resize_keyboard: true
+        }
+    };
+
     bot.sendMessage(chatId,
         '📇 ПОИСК КОНТАКТОВ КОМПАНИИ 🔍\n\n' +
-        '💼 Введите название компании для поиска контактов:\n' +
-        '💡 Например: "Google", "Microsoft", "Apple"\n' +
-        '⚡ Или часть названия для широкого поиска').catch(console.error);
+        '💼 Введите название компании для поиска или добавьте новый контакт.', 
+        contactSearchKeyboard).catch(console.error);
 }
 
 function handleContactSearch(chatId, telegramId, text) {
@@ -4947,6 +6873,7 @@ function showContactsAdmin(chatId, telegramId) {
         reply_markup: {
             keyboard: [
                 ['➕ Добавить контакт', '📋 Все контакты'],
+                ['📥 Импорт CSV'],
                 ['🗑️ Удалить контакт', '✏️ Редактировать контакт'],
                 ['🔙 Назад в админку']
             ],
@@ -4958,9 +6885,35 @@ function showContactsAdmin(chatId, telegramId) {
         '📇 УПРАВЛЕНИЕ КОНТАКТАМИ 👥\n\n' +
         '➕ Добавить контакт - Добавить новый контакт компании\n' +
         '📋 Все контакты - Просмотр всех контактов\n' +
+        '📥 Импорт CSV - Массовая загрузка контактов из файла\n' +
         '✏️ Редактировать контакт - Изменить данные\n' +
         '🗑️ Удалить контакт - Удалить контакт\n\n' +
         '👇 Выберите действие:', contactsKeyboard).catch(console.error);
+}
+
+function startCsvImport(chatId, telegramId) {
+    db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+        if (!admin) return; // Silently ignore for non-admins
+
+        global.userScreenshots[telegramId] = {
+            type: 'import_contacts',
+            step: 'awaiting_file'
+        };
+
+        const message = `**Импорт контактов из CSV**\n\n` +
+                        `Пожалуйста, загрузите CSV-файл.\n` +
+                        `Файл должен содержать следующие колонки в указанном порядке и без заголовка:\n` +
+                        `1.  ` + '\`company_name\`' + ` (Название компании)\n` +
+                        `2.  ` + '\`contact_name\`' + ` (Имя контакта)\n` +
+                        `3.  ` + '\`position\`' + ` (Должность)\n` +
+                        `4.  ` + '\`email\`' + `\n` +
+                        `5.  ` + '\`phone\`' + ` (Телефон)\n` +
+                        `6.  ` + '\`telegram\`' + `\n` +
+                        `7.  ` + '\`notes\`' + ` (Заметки)\n\n` +
+                        `Разделитель - запятая. Для пропуска значения оставьте поле пустым.`;
+
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    });
 }
 
 function startAddContact(chatId, telegramId) {
@@ -5183,11 +7136,7 @@ function showEmployeesOnline(chatId, telegramId) {
         updateUserActivity(telegramId);
 
         db.all(`SELECT
-                    full_name,
-                    role,
-                    status,
-                    status_message,
-                    last_activity,
+                    full_name, role, status, status_message, last_activity, position, position_level, registration_date, graduated_at,
                     CASE
                         WHEN datetime('now', '-5 minutes') < last_activity AND status != 'offline' THEN 'online'
                         WHEN status = 'away' THEN 'away'
@@ -5195,7 +7144,7 @@ function showEmployeesOnline(chatId, telegramId) {
                         ELSE 'offline'
                     END as actual_status
                 FROM users
-                WHERE is_registered = true
+                WHERE is_registered = 1
                 ORDER BY actual_status DESC, full_name`, (err, users) => {
             if (err) {
                 console.error('❌ Show employees online error:', err);
@@ -5228,7 +7177,7 @@ function showEmployeesOnline(chatId, telegramId) {
             if (statusGroups.online.length > 0) {
                 statusText += `🟢 ОНЛАЙН (${statusGroups.online.length})\n`;
                 statusGroups.online.forEach(user => {
-                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    statusText += `   👤 ${getUserDisplayName(user)} (${user.role})\n`;
                     if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
                 });
                 statusText += '\n';
@@ -5238,7 +7187,7 @@ function showEmployeesOnline(chatId, telegramId) {
             if (statusGroups.away.length > 0) {
                 statusText += `🟡 НЕ НА МЕСТЕ (${statusGroups.away.length})\n`;
                 statusGroups.away.forEach(user => {
-                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    statusText += `   👤 ${getUserDisplayName(user)} (${user.role})\n`;
                     if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
                 });
                 statusText += '\n';
@@ -5248,7 +7197,7 @@ function showEmployeesOnline(chatId, telegramId) {
             if (statusGroups.busy.length > 0) {
                 statusText += `🔴 НЕ БЕСПОКОИТЬ (${statusGroups.busy.length})\n`;
                 statusGroups.busy.forEach(user => {
-                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    statusText += `   👤 ${getUserDisplayName(user)} (${user.role})\n`;
                     if (user.status_message) statusText += `      💬 ${user.status_message}\n`;
                 });
                 statusText += '\n';
@@ -5260,7 +7209,7 @@ function showEmployeesOnline(chatId, telegramId) {
                 statusGroups.offline.forEach(user => {
                     const lastActivity = new Date(user.last_activity);
                     const timeAgo = getTimeAgo(lastActivity);
-                    statusText += `   👤 ${user.full_name || 'Неизвестно'} (${user.role})\n`;
+                    statusText += `   👤 ${getUserDisplayName(user)} (${user.role})\n`;
                     statusText += `      ⏰ ${timeAgo}\n`;
                 });
                 statusText += '\n';
@@ -5399,6 +7348,14 @@ function getStatusEmoji(status) {
     }
 }
 
+function getDayOfWeek(dateString) { // "ДД.ММ.ГГГГ"
+    const parts = dateString.split('.');
+    if (parts.length !== 3) return '';
+    const date = new Date(parts[2], parts[1] - 1, parts[0]);
+    const days = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+    return days[date.getDay()];
+}
+
 function getTimeAgo(date) {
     const now = new Date();
     const diffMs = now - date;
@@ -5411,6 +7368,232 @@ function getTimeAgo(date) {
     if (diffHours < 24) return `${diffHours} ч назад`;
     if (diffDays < 7) return `${diffDays} дн назад`;
     return date.toLocaleDateString();
+}
+
+function getUserDisplayName(user) {
+    if (!user) {
+        return 'Неизвестный';
+    }
+
+    let displayName = user.full_name || user.username || 'Неизвестный';
+
+    if (user.position) {
+        if (user.graduated_at) {
+            displayName += `, Junior-${user.position}`;
+        } else if (user.position_level) {
+            displayName += `, ${user.position_level} ${user.position}`;
+        } else {
+            displayName += `, ${user.position}`;
+        }
+    }
+
+    return displayName;
+}
+
+// Handle contact exchange for QR code scanning
+function handleContactExchange(chatId, telegramId, contact, state) {
+    try {
+        // Get scanner's user info
+        db.get("SELECT id, full_name FROM users WHERE telegram_id = ?", [telegramId], (err, scanner) => {
+            if (err || !scanner) {
+                console.error('Error getting scanner info:', err);
+                bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+                return;
+            }
+
+            // Get manager's user info
+            db.get("SELECT id, full_name, telegram_id FROM users WHERE id = ?", [state.managerId], (err, manager) => {
+                if (err || !manager) {
+                    console.error('Error getting manager info:', err);
+                    bot.sendMessage(chatId, '❌ Менеджер не найден. Попробуйте снова.');
+                    return;
+                }
+
+                // Format contact info
+                const scannerContactInfo = `👤 ${contact.first_name} ${contact.last_name || ''}\n📞 ${contact.phone_number}\n🆔 Telegram ID: ${telegramId}`;
+                const managerContactInfo = `👤 ${manager.full_name}\n🆔 Telegram ID: ${manager.telegram_id}`;
+
+                // Save contact exchange to database
+                db.run(`INSERT INTO conference_contacts (scanner_id, manager_id, scanner_contact, manager_contact)
+                        VALUES (?, ?, ?, ?)`,
+                    [scanner.id, manager.id, scannerContactInfo, managerContactInfo], (err) => {
+                    if (err) {
+                        console.error('Error saving contact exchange:', err);
+                        bot.sendMessage(chatId, '❌ Произошла ошибка при сохранении контакта.');
+                        return;
+                    }
+
+                    // Send confirmation to scanner
+                    bot.sendMessage(chatId,
+                        `✅ Ваш контакт успешно отправлен!\n\n` +
+                        `Вы теперь можете связаться с ${manager.full_name}.\n\n` +
+                        `📇 Ваши контакты с конфы доступны в меню "📇 Контакты с конфы"`,
+                        {
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '💬 Написать менеджеру', url: `https://t.me/${manager.telegram_id}` }
+                                ]]
+                            }
+                        }
+                    );
+
+                    // Notify manager about new contact
+                    bot.sendMessage(manager.telegram_id,
+                        `🔔 Новый контакт с конференции!\n\n` +
+                        `${scannerContactInfo}\n\n` +
+                        `Вы можете связаться с этим человеком через Telegram.`,
+                        {
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '💬 Написать', url: `https://t.me/${telegramId}` }
+                                ]]
+                            }
+                        }
+                    );
+
+                    // Clear the state
+                    delete global.userScreenshots[telegramId];
+                });
+            });
+        });
+    } catch (error) {
+        console.error('Error in handleContactExchange:', error);
+        bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте снова.');
+    }
+}
+
+// Show contacts from conferences
+function showMyContacts(chatId, telegramId) {
+    try {
+        db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+            if (err || !user) {
+                bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
+                return;
+            }
+
+            // Get all contacts where user is either scanner or manager
+            db.all(`SELECT * FROM conference_contacts
+                    WHERE scanner_id = ? OR manager_id = ?
+                    ORDER BY exchange_date DESC`,
+                    [user.id, user.id], (err, contacts) => {
+                if (err) {
+                    console.error('Error loading conference contacts:', err);
+                    bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
+                    return;
+                }
+
+                if (!contacts || contacts.length === 0) {
+                    bot.sendMessage(chatId,
+                        '📇 Контакты с конфы\n\n' +
+                        'У вас пока нет контактов с конференций.\n\n' +
+                        'Отсканируйте QR-код коллеги на конференции, чтобы обменяться контактами!',
+                        qrContactsKeyboard).catch(console.error);
+                    return;
+                }
+
+                let contactsText = `📇 Ваши контакты с конференций 📋\n\n`;
+                contactsText += `📊 Всего контактов: ${contacts.length}\n\n`;
+
+                contacts.forEach((contact, index) => {
+                    const isScanner = contact.scanner_id === user.id;
+                    const otherContactInfo = isScanner ? contact.manager_contact : contact.scanner_contact;
+                    const exchangeDate = new Date(contact.exchange_date).toLocaleDateString('ru-RU');
+                    
+                    contactsText += `🤝 Контакт #${index + 1} (${exchangeDate})\n`;
+                    contactsText += `${otherContactInfo}\n`;
+                    contactsText += `${isScanner ? '👤 Вы сканировали' : '📤 Вы отправили контакт'}\n\n`;
+                });
+
+                // Split message if too long
+                if (contactsText.length > 4000) {
+                    const parts = [];
+                    let currentPart = `📇 Ваши контакты с конференций 📋\n\n📊 Всего контактов: ${contacts.length}\n\n`;
+                    
+                    contacts.forEach((contact, index) => {
+                        const isScanner = contact.scanner_id === user.id;
+                        const otherContactInfo = isScanner ? contact.manager_contact : contact.scanner_contact;
+                        const exchangeDate = new Date(contact.exchange_date).toLocaleDateString('ru-RU');
+                        
+                        const contactInfo = `🤝 Контакт #${index + 1} (${exchangeDate})\n${otherContactInfo}\n${isScanner ? '👤 Вы сканировали' : '📤 Вы отправили контакт'}\n\n`;
+                        
+                        if (currentPart.length + contactInfo.length > 4000) {
+                            parts.push(currentPart);
+                            currentPart = '';
+                        }
+                        currentPart += contactInfo;
+                    });
+                    
+                    if (currentPart) parts.push(currentPart);
+                    
+                    // Send parts sequentially
+                    parts.forEach((part, index) => {
+                        setTimeout(() => {
+                            bot.sendMessage(chatId, part).catch(console.error);
+                        }, index * 500);
+                    });
+                } else {
+                    bot.sendMessage(chatId, contactsText, qrContactsKeyboard).catch(console.error);
+                }
+            });
+        });
+    } catch (error) {
+        console.error('Error in showMyContacts:', error);
+        bot.sendMessage(chatId, '❌ Ошибка загрузки контактов.').catch(console.error);
+    }
+}
+
+function generateUserQrCode(chatId, telegramId) {
+    db.get("SELECT id, full_name, qr_code_token FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка: не удалось найти ваш профиль.');
+            return;
+        }
+
+        let qrToken = user.qr_code_token;
+        if (!qrToken) {
+            // Generate a unique token
+            qrToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+            db.run("UPDATE users SET qr_code_token = ? WHERE id = ?", [qrToken, user.id], (err) => {
+                if (err) console.error('Error saving QR token:', err);
+            });
+        }
+
+        bot.getMe().then(botInfo => {
+            const deepLink = `https://t.me/${botInfo.username}?start=${qrToken}`;
+            const qrCodeFileName = `./temp_qr_${telegramId}.png`;
+
+            qrcode.toFile(qrCodeFileName, deepLink, {
+                errorCorrectionLevel: 'H',
+                width: 256
+            }, (err) => {
+            if (err) {
+                console.error('Error generating QR code:', err);
+                bot.sendMessage(chatId, '❌ Ошибка при генерации QR-кода.');
+                return;
+            }
+
+            bot.sendPhoto(chatId, qrCodeFileName, {
+                caption: `Ваш QR-код для конференций:\n\n` +
+                         `Покажите коллегам на конфе - они отсканируют и добавят вас в контакты.\n\n` +
+                         `Ссылка: ${deepLink}`
+            }).finally(() => {
+                // Clean up the generated QR code file
+                require('fs').unlink(qrCodeFileName, (err) => {
+                    if (err) console.error('Error deleting QR file:', err);
+                });
+            });
+        });
+        }); // close bot.getMe().then()
+    });
+}
+
+function generateWalletAddress() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let address = 'P';
+    for (let i = 0; i < 33; i++) {
+        address += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return address;
 }
 
 function showCurrentStatus(chatId, telegramId) {
@@ -5474,71 +7657,112 @@ function generateInvoicePDF(data, filePath) {
     const detailsY = headerY + 20;
 
     // Left: Dynamic payer organization details
-    doc.font('Helvetica-Bold').fontSize(12).text(transliterate(data.org_name || 'Company'), margin + 20, headerY, { lineGap: 4 });
-    doc.font('Helvetica').fontSize(10).text(transliterate(data.org_address || 'Address'), margin + 20, headerY + 20, { lineGap: 3 });
+    doc.font('Helvetica-Bold').fontSize(12).text(transOrgName, margin + 20, headerY, { lineGap: 4, width: contentWidth - 100 });
+    
+    // Calculate company name height dynamically
+    const companyNameLines = doc.widthOfString(transOrgName) > (contentWidth - 100) ?
+        Math.ceil(doc.widthOfString(transOrgName) / (contentWidth - 100)) : 1;
+    const companyNameHeight = companyNameLines * 14; // Approximate height based on font size and line gap
+    
+    // Add "Address:" label with proper spacing
+    const addressLabelY = headerY + companyNameHeight + 15; // 15pt below company name
+    doc.font('Helvetica-Bold').fontSize(10).text('Address:', margin + 20, addressLabelY);
+    
+    // Calculate address height dynamically
+    const addressText = transliterate(data.org_address || 'Address');
+    doc.font('Helvetica').fontSize(10);
+    
+    // Calculate how many lines the address will take
+    const addressLines = doc.widthOfString(addressText) > (contentWidth - 100) ?
+        Math.ceil(doc.widthOfString(addressText) / (contentWidth - 100)) : 1;
+    const addressHeight = addressLines * 12; // Approximate height based on font size and line gap
+    
+    // Position address below the "Address:" label with proper spacing
+    const addressY = addressLabelY + 15; // 15pt below "Address:" label
+    doc.text(addressText, margin + 20, addressY, { lineGap: 3, width: contentWidth - 100 });
 
-    // Right: Invoice details (x ≈ pageWidth - 100pt = 595-100=495pt, but with margin: margin + contentWidth - 100 ≈ 36 + 523 - 100 = 459pt)
+    // Right: Invoice details at the same level as company name
     const rightX = pageWidth - margin - 100;
     const invoiceDate = data.invoice_date || new Date().toLocaleDateString('ru-RU');
     const invoiceNumber = `INV-${data.invoice_number || '001'}`;
     const subject = 'advertising on Partnerkin.com';
-    doc.font('Helvetica').fontSize(10).text(`Invoice Date: ${invoiceDate} | Invoice Number: ${invoiceNumber} | Subject: ${subject}`, rightX, detailsY, { align: 'right', lineGap: 0 });
+    doc.font('Helvetica').fontSize(10).text(`Invoice Date: ${invoiceDate} | Invoice Number: ${invoiceNumber} | Subject: ${subject}`, rightX, headerY, { align: 'right', lineGap: 0 });
 
-    // 2. Invoice Table (~200-300pt below header: headerY=136 + 250 ≈ 386pt, but specs y=300 absolute? Use y=300 for table start)
-    const tableY = 236; // Retained positioning to avoid overlaps with headers
+    // 2. Invoice Table - dynamically positioned based on address height
+    const baseTableY = 236; // Base positioning
+    const addressBottom = addressY + addressHeight + 20; // Address end + increased spacing
+    const tableY = Math.max(baseTableY, addressBottom); // Use the lower of the two positions
     const rowHeight = 30; // With 10pt padding top/bottom
     const colWidth = tableWidth / 3; // Equal widths for balanced 3-column layout: Description, Quantity, Amount
 
     // Headers - vertically centered in cell (cell top at tableY + 10, height rowHeight=30, text at midpoint)
-    // Updated: Removed "Description" column; added "Quantity" in its place
     const cellMidpoint = 15; // (rowHeight / 2)
     doc.font('Helvetica-Bold').fontSize(10);
-    doc.text('Description', tableX, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // First column: service description (work_type)
-    doc.text('Quantity', tableX + colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // New: Quantity column
-    doc.text('Amount', tableX + 2 * colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // Retained: Amount (formatted to 1 decimal)
+    doc.text('Description', tableX, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth });
+    doc.text('Quantity', tableX + colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth });
+    doc.text('Amount', tableX + 2 * colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth });
 
-    // Data row - single row for this invoice (no multi-item loop needed)
-    // Updated: Description shows work_type; Quantity from data.quantity (integer); Amount uses toFixed(1) for precision (e.g., 100.0)
-    // Removed org_info from table (already in header); no Description column content
+    // Data row - single row for this invoice
     doc.font('Helvetica').fontSize(10);
     const transWorkType = transliterate(data.work_type || 'Advertising services'); // Description: service type
+    
+    // Handle long work_type descriptions by wrapping text
+    const maxDescriptionWidth = colWidth - 20; // Increase padding further to ensure text stays within boundaries
+    const workTypeLines = doc.widthOfString(transWorkType) > maxDescriptionWidth ?
+        Math.ceil(doc.widthOfString(transWorkType) / maxDescriptionWidth) : 1;
+    
+    // Calculate the actual row height needed for the description with more padding
+    const descriptionRowHeight = Math.max(rowHeight, workTypeLines * 12 + 15); // Ensure minimum row height with more padding
+    
+    // Always wrap the description text to ensure it stays within boundaries
+    // Center the description text vertically in the cell
+    const descriptionY = tableY + 10 + rowHeight + (descriptionRowHeight - rowHeight) / 2 + 5;
+    doc.text(transWorkType, tableX + 10, descriptionY, {
+        align: 'center',
+        width: maxDescriptionWidth
+    });
+    
     const quantityStr = data.quantity ? data.quantity.toString() : '1'; // Quantity: integer from data
     const amountStr = `${(data.total || 0).toFixed(1)} USDT`; // Amount: formatted to 1 decimal place
-    doc.text(transWorkType, tableX, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
-    doc.text(quantityStr, tableX + colWidth, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
-    doc.text(amountStr, tableX + 2 * colWidth, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
+    
+    // Center quantity and amount in their cells, accounting for potentially taller description row
+    const quantityAmountY = tableY + 10 + rowHeight + (descriptionRowHeight - rowHeight) / 2 + cellMidpoint;
+    doc.text(quantityStr, tableX + colWidth, quantityAmountY, { align: 'center', width: colWidth });
+    doc.text(amountStr, tableX + 2 * colWidth, quantityAmountY, { align: 'center', width: colWidth });
 
-    // Borders: 1pt solid black, around cells with padding (unchanged structure for 2 rows)
+    // Borders: 1pt solid black, around cells with padding (adjusted for dynamic row height)
     const borderWidth = 1;
     doc.lineWidth(borderWidth);
-    // Outer border
-    doc.rect(tableX, tableY + 10, tableWidth, rowHeight * 2).stroke(); // Header + data row height
+    // Outer border - adjust height for description row
+    const totalTableHeight = rowHeight + descriptionRowHeight;
+    doc.rect(tableX, tableY + 10, tableWidth, totalTableHeight).stroke();
     // Vertical lines (3 columns: 4 lines)
     let currentX = tableX;
     for (let i = 0; i <= 3; i++) { // 4 lines for 3 columns
-        doc.moveTo(currentX, tableY + 10).lineTo(currentX, tableY + 10 + rowHeight * 2).stroke();
+        doc.moveTo(currentX, tableY + 10).lineTo(currentX, tableY + 10 + totalTableHeight).stroke();
         currentX += colWidth;
     }
     // Horizontal lines
     doc.moveTo(tableX, tableY + 10).lineTo(tableX + tableWidth, tableY + 10).stroke(); // Top
     doc.moveTo(tableX, tableY + 10 + rowHeight).lineTo(tableX + tableWidth, tableY + 10 + rowHeight).stroke(); // Between header/data
-    doc.moveTo(tableX, tableY + 10 + rowHeight * 2).lineTo(tableX + tableWidth, tableY + 10 + rowHeight * 2).stroke(); // Bottom
+    doc.moveTo(tableX, tableY + 10 + totalTableHeight).lineTo(tableX + tableWidth, tableY + 10 + totalTableHeight).stroke(); // Bottom
 
-    // 3. Total Payment Line (fixed at 380pt)
+    // 3. Total Payment Line - dynamically positioned based on table height
     // Updated: Total formatted to 1 decimal place for consistency with Amount column
-    const totalY = 380;
+    const tableBottom = tableY + 10 + totalTableHeight;
+    const totalY = Math.max(380, tableBottom + 30); // Ensure at least 30pt spacing below table
     doc.font('Helvetica-Bold').fontSize(12).text('Total Payment ', tableX, totalY);
     // Dashed line spanning most width
     doc.dash(5, { space: 5 }).moveTo(tableX + 100, totalY + 5).lineTo(tableX + tableWidth - 50, totalY + 5).undash().stroke();
     doc.text(` ${(data.total || 0).toFixed(1)} USDT`, tableX + tableWidth - 80, totalY, { align: 'right' });
 
-    // Payment details closer to total (fixed at 410pt)
-    const paymentY = 410;
+    // Payment details closer to total - dynamically positioned
+    const paymentY = totalY + 30;
     doc.font('Helvetica').fontSize(10).text('USDT TRC-20', margin + 20, paymentY, { lineGap: 3 });
     doc.font('Courier').fontSize(10).text('TWwhE7Sa6CUPN6Lq6NwKDQNrMqFJSNMZPR', margin + 20, paymentY + 15, { lineGap: 3 }); // Monospace for wallet, aligned in footer area
 
-    // Company footer below payment (fixed at 450pt)
-    const companyFooterY = 450;
+    // Company footer below payment - dynamically positioned
+    const companyFooterY = paymentY + 40;
     doc.font('Helvetica-Bold').fontSize(10).text('WARHOLA LTD', margin + 20, companyFooterY, { lineGap: 3 });
     doc.font('Helvetica').fontSize(10).text('27 Old Gloucester Street, London, United Kingdom, WC1N 3AX\nadv@partnerkin.com', margin + 20, companyFooterY + 15, { lineGap: 3 });
 
@@ -5547,49 +7771,6 @@ function generateInvoicePDF(data, filePath) {
     stream.on('finish', () => {
         console.log(`PDF generated and saved to ${filePath} with even vertical distribution and single-page fit.`);
     });
-}
-
-// ========== CERTIFICATE GENERATION FUNCTION ==========
-
-async function generateCertificate(userName, courseName, completionDate) {
-    try {
-        // Load the template image
-        const templateImage = await loadImage('./template2.png');
-
-        // Create canvas with the same dimensions as the template
-        const canvas = createCanvas(templateImage.width, templateImage.height);
-        const ctx = canvas.getContext('2d');
-
-        // Draw the template image
-        ctx.drawImage(templateImage, 0, 0);
-
-        // Set font and color for text
-        ctx.font = 'bold 48px Arial';
-        ctx.fillStyle = '#2f187b'; // Indigo color
-        ctx.textAlign = 'center';
-
-        // Draw user name in the center (top area)
-        ctx.font = 'bold 59px Roboto';
-        const nameY = templateImage.height * 0.53; // 55% from top
-        ctx.fillText(userName, templateImage.width / 2, nameY);
-
-        // Draw congratulatory course text below the name
-        const congratText = `Поздравляем! Вы успешно завершили все курсы и стали настоящим мастером!`;
-        ctx.font = 'bold 22px Arial';
-        const courseY = nameY + 70; // Adjusted spacing for longer text
-        ctx.fillText(congratText, templateImage.width / 2, courseY);
-
-        // Draw completion date at the bottom
-        ctx.font = 'bold 50px Arial';
-        const dateY = templateImage.height * 0.85; // 85% from top
-        ctx.fillText(completionDate, templateImage.width * 0.26, dateY);
-
-        // Return the generated image as PNG buffer
-        return canvas.toBuffer('image/png');
-    } catch (error) {
-        console.error('❌ Certificate generation error:', error);
-        throw error;
-    }
 }
 
 // ========== ФУНКЦИИ СИСТЕМЫ ОТПУСКОВ ==========
@@ -5692,10 +7873,53 @@ function handleVacationInput(chatId, telegramId, text) {
                     return true;
                 }
                 state.request.start_date = text;
-                state.step = 'end_date';
+                state.step = 'duration';
                 bot.sendMessage(chatId,
-                    '📅 Укажите дату окончания отпуска в формате ДД.ММ.ГГГГ\n' +
-                    'Например: 29.07.2024').catch(console.error);
+                    '📅 Выберите длительность отпуска:',
+                    vacationDurationKeyboard).catch(console.error);
+                break;
+
+            case 'duration':
+                const durationMatch = text.match(/(\d+)/);
+                if (durationMatch && ['7', '14', '28'].includes(durationMatch[1])) {
+                    const duration = parseInt(durationMatch[1]);
+                    const startDate = parseDate(state.request.start_date);
+                    const endDate = new Date(startDate);
+                    endDate.setDate(startDate.getDate() + duration - 1); // end date is inclusive
+
+                    const day = String(endDate.getDate()).padStart(2, '0');
+                    const month = String(endDate.getMonth() + 1).padStart(2, '0');
+                    const year = endDate.getFullYear();
+                    state.request.end_date = `${day}.${month}.${year}`;
+
+                    state.request.days_count = duration;
+                    state.step = 'vacation_type';
+
+                    const typeKeyboard = {
+                        reply_markup: {
+                            keyboard: [
+                                ['Основной отпуск'],
+                                ['Учебный отпуск', 'Без сохранения з/п'],
+                                ['Больничный'],
+                                ['❌ Отмена']
+                            ],
+                            resize_keyboard: true,
+                            one_time_keyboard: true
+                        }
+                    };
+
+                    bot.sendMessage(chatId,
+                        `📊 Период: ${state.request.start_date} - ${state.request.end_date}\n` +
+                        `⏰ Количество дней: ${state.request.days_count}\n\n` +
+                        '📋 Выберите тип отпуска:', typeKeyboard).catch(console.error);
+                } else if (text.includes('Другое')) {
+                    state.step = 'end_date';
+                    bot.sendMessage(chatId,
+                        '📅 Укажите дату окончания отпуска в формате ДД.ММ.ГГГГ\n' +
+                        'Например: 29.07.2024').catch(console.error);
+                } else {
+                    bot.sendMessage(chatId, '❌ Пожалуйста, выберите один из вариантов.').catch(console.error);
+                }
                 break;
 
             case 'end_date':
@@ -5782,7 +8006,9 @@ function submitVacationRequest(chatId, telegramId, request) {
                     bot.sendMessage(chatId,
                         `❌ Недостаточно дней отпуска!\n` +
                         `Запрашиваете: ${request.days_count} дней\n` +
-                        `Остаток: ${balance ? balance.remaining_days : 0} дней`).catch(console.error);
+                        `Остаток: ${balance ? balance.remaining_days : 0} дней`).then(() => {
+                            showVacationMenu(chatId, telegramId);
+                        }).catch(console.error);
                     delete global.vacationStates[telegramId];
                     return;
                 }
@@ -5792,7 +8018,9 @@ function submitVacationRequest(chatId, telegramId, request) {
                         (user_id, telegram_id, start_date, end_date, vacation_type, reason, days_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
                     [user.id, telegramId, request.start_date, request.end_date,
-                     request.vacation_type, request.reason, request.days_count], () => {
+                     request.vacation_type, request.reason, request.days_count], function() {
+
+                    const requestId = this.lastID;
 
                     // Обновляем баланс (резервируем дни)
                     db.run(`UPDATE vacation_balances
@@ -5808,6 +8036,9 @@ function submitVacationRequest(chatId, telegramId, request) {
                             `💭 Причина: ${request.reason || 'Не указана'}\n\n` +
                             '⏳ Заявка отправлена на рассмотрение HR!\n' +
                             '📧 Вы получите уведомление о решении.', vacationKeyboard).catch(console.error);
+
+                        // Уведомляем админов
+                        notifyAdminsOfVacationRequest(requestId, user, request);
 
                         delete global.vacationStates[telegramId];
                     });
@@ -5878,10 +8109,12 @@ function isValidDate(dateStr) {
            date.getFullYear() === year &&
            date >= new Date();
 }
+
 function parseDate(dateStr) {
     const [day, month, year] = dateStr.split('.').map(Number);
     return new Date(year, month - 1, day);
 }
+
 // ========== HR ФУНКЦИИ УПРАВЛЕНИЯ ОТПУСКАМИ ==========
 
 // Показать все заявки на отпуск для HR
@@ -5893,7 +8126,7 @@ function showAdminVacationRequests(chatId, telegramId) {
                 return;
             }
 
-            db.all(`SELECT vr.*, u.full_name, u.username
+            db.all(`SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at
                     FROM vacation_requests vr
                     JOIN users u ON vr.telegram_id = u.telegram_id
                     ORDER BY
@@ -5931,7 +8164,7 @@ function showAdminVacationRequests(chatId, telegramId) {
                     if (req.status === 'pending') pendingCount++;
 
                     requestsText += `${statusEmoji[req.status]} ${statusText[req.status]}\n`;
-                    requestsText += `👤 ${req.full_name || req.username}\n`;
+                    requestsText += `👤 ${getUserDisplayName(req)}\n`;
                     requestsText += `📅 ${req.start_date} - ${req.end_date} (${req.days_count} дн.)\n`;
                     requestsText += `📋 ${req.vacation_type}\n`;
 
@@ -5954,6 +8187,42 @@ function showAdminVacationRequests(chatId, telegramId) {
     }
 }
 
+function showPendingVacationRequestsForApproval(chatId) {
+    db.all("SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at FROM vacation_requests vr JOIN users u ON vr.user_id = u.id WHERE vr.status = 'pending'", (err, requests) => {
+        if (err || !requests || requests.length === 0) {
+            bot.sendMessage(chatId, '✅ Нет заявок для одобрения.');
+            return;
+        }
+
+        const keyboard = requests.map(req => ([{
+            text: `${getUserDisplayName(req)}: ${req.start_date} - ${req.end_date}`,
+            callback_data: `vac_approve_${req.id}`
+        }]));
+
+        bot.sendMessage(chatId, 'Выберите заявку для одобрения:', {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    });
+}
+
+function showPendingVacationRequestsForRejection(chatId) {
+    db.all("SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at FROM vacation_requests vr JOIN users u ON vr.user_id = u.id WHERE vr.status = 'pending'", (err, requests) => {
+        if (err || !requests || requests.length === 0) {
+            bot.sendMessage(chatId, '❌ Нет заявок для отклонения.');
+            return;
+        }
+
+        const keyboard = requests.map(req => ([{
+            text: `${getUserDisplayName(req)}: ${req.start_date} - ${req.end_date}`,
+            callback_data: `vac_reject_${req.id}`
+        }]));
+
+        bot.sendMessage(chatId, 'Выберите заявку для отклонения:', {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    });
+}
+
 // Показать календарь отпусков команды
 function showTeamVacationCalendar(chatId, telegramId) {
     try {
@@ -5970,7 +8239,7 @@ function showTeamVacationCalendar(chatId, telegramId) {
             // Получаем одобренные отпуска на ближайшие 3 месяца
             const endDate = new Date(currentYear, currentMonth + 3, 0);
 
-            db.all(`SELECT vr.*, u.full_name, u.username
+            db.all(`SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at
                     FROM vacation_requests vr
                     JOIN users u ON vr.telegram_id = u.telegram_id
                     WHERE vr.status = 'approved'
@@ -5984,14 +8253,14 @@ function showTeamVacationCalendar(chatId, telegramId) {
                     calendarText += '✅ ОДОБРЕННЫЕ ОТПУСКИ:\n\n';
 
                     approvedVacations.forEach((vacation) => {
-                        calendarText += `👤 ${vacation.full_name || vacation.username}\n`;
+                        calendarText += `👤 ${getUserDisplayName(vacation)}\n`;
                         calendarText += `📅 ${vacation.start_date} - ${vacation.end_date}\n`;
                         calendarText += `⏰ ${vacation.days_count} дней (${vacation.vacation_type})\n\n`;
                     });
                 }
 
                 // Показываем также заявки на рассмотрении
-                db.all(`SELECT vr.*, u.full_name, u.username
+                db.all(`SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at
                         FROM vacation_requests vr
                         JOIN users u ON vr.telegram_id = u.telegram_id
                         WHERE vr.status = 'pending'
@@ -6001,7 +8270,7 @@ function showTeamVacationCalendar(chatId, telegramId) {
                         calendarText += '🟡 НА РАССМОТРЕНИИ:\n\n';
 
                         pendingVacations.forEach((vacation) => {
-                            calendarText += `👤 ${vacation.full_name || vacation.username}\n`;
+                            calendarText += `👤 ${getUserDisplayName(vacation)}\n`;
                             calendarText += `📅 ${vacation.start_date} - ${vacation.end_date}\n`;
                             calendarText += `⏰ ${vacation.days_count} дней\n\n`;
                         });
@@ -6027,11 +8296,11 @@ function showEmployeeBalances(chatId, telegramId) {
 
             const currentYear = new Date().getFullYear();
 
-            db.all(`SELECT u.full_name, u.username, u.telegram_id, u.role,
+            db.all(`SELECT u.full_name, u.username, u.telegram_id, u.role, u.position, u.position_level, u.registration_date, u.graduated_at,
                            vb.total_days, vb.used_days, vb.pending_days, vb.remaining_days
                     FROM users u
                     LEFT JOIN vacation_balances vb ON u.telegram_id = vb.telegram_id AND vb.year = ?
-                    WHERE u.is_registered = true
+                    WHERE u.is_registered = 1
                     ORDER BY u.full_name`, [currentYear], (err, employees) => {
 
                 if (err || !employees || employees.length === 0) {
@@ -6048,7 +8317,7 @@ function showEmployeeBalances(chatId, telegramId) {
                     const pendingDays = emp.pending_days || 0;
                     const remainingDays = emp.remaining_days || 28;
 
-                    balanceText += `${index + 1}. ${roleEmoji} ${emp.full_name || emp.username}\n`;
+                    balanceText += `${index + 1}. ${roleEmoji} ${getUserDisplayName(emp)}\n`;
                     balanceText += `   📊 ${remainingDays}/${totalDays} дней`;
 
                     if (usedDays > 0) balanceText += ` | Использовано: ${usedDays}`;
@@ -6186,7 +8455,7 @@ function handleVacationAdminCommands(chatId, telegramId, text) {
 // Одобрить заявку на отпуск
 function approveVacationRequest(chatId, adminId, requestId) {
     try {
-        db.get("SELECT vr.*, u.full_name, u.username FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
+        db.get("SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
                [requestId], (err, request) => {
 
             if (err || !request) {
@@ -6216,7 +8485,7 @@ function approveVacationRequest(chatId, adminId, requestId) {
                     // Уведомляем HR
                     bot.sendMessage(chatId,
                         `✅ ЗАЯВКА ОДОБРЕНА!\n\n` +
-                        `👤 Сотрудник: ${request.full_name || request.username}\n` +
+                        `👤 Сотрудник: ${getUserDisplayName(request)}\n` +
                         `📅 Период: ${request.start_date} - ${request.end_date}\n` +
                         `⏰ Дней: ${request.days_count}\n` +
                         `📋 Тип: ${request.vacation_type}\n\n` +
@@ -6241,7 +8510,7 @@ function approveVacationRequest(chatId, adminId, requestId) {
 // Отклонить заявку на отпуск
 function rejectVacationRequest(chatId, adminId, requestId, reason) {
     try {
-        db.get("SELECT vr.*, u.full_name, u.username FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
+        db.get("SELECT vr.*, u.full_name, u.username, u.role, u.position, u.position_level, u.registration_date, u.graduated_at FROM vacation_requests vr JOIN users u ON vr.telegram_id = u.telegram_id WHERE vr.id = ?",
                [requestId], (err, request) => {
 
             if (err || !request) {
@@ -6272,7 +8541,7 @@ function rejectVacationRequest(chatId, adminId, requestId, reason) {
                     // Уведомляем HR
                     bot.sendMessage(chatId,
                         `❌ ЗАЯВКА ОТКЛОНЕНА!\n\n` +
-                        `👤 Сотрудник: ${request.full_name || request.username}\n` +
+                        `👤 Сотрудник: ${getUserDisplayName(request)}\n` +
                         `📅 Период: ${request.start_date} - ${request.end_date}\n` +
                         `💭 Причина: ${reason}\n\n` +
                         '📧 Сотрудник получит уведомление!',
@@ -6306,7 +8575,7 @@ function setVacationBalance(chatId, adminId, userTelegramId, days) {
             }
 
             // Создаём или обновляем баланс
-            db.run(`INSERT INTO vacation_balances
+            db.run(`INSERT OR REPLACE INTO vacation_balances
                     (user_id, telegram_id, year, total_days, remaining_days, used_days, pending_days)
                     VALUES (?, ?, ?, ?, ?,
                             COALESCE((SELECT used_days FROM vacation_balances WHERE telegram_id = ? AND year = ?), 0),
@@ -6315,7 +8584,7 @@ function setVacationBalance(chatId, adminId, userTelegramId, days) {
 
                 bot.sendMessage(chatId,
                     `✅ БАЛАНС ОБНОВЛЁН!\n\n` +
-                    `👤 Сотрудник: ${user.full_name || user.username}\n` +
+                    `👤 Сотрудник: ${getUserDisplayName(user)}\n` +
                     `📊 Новый баланс: ${days} дней\n` +
                     `📅 Год: ${currentYear}`,
                     adminVacationKeyboard).catch(console.error);
