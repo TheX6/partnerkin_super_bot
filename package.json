@@ -9,7 +9,8 @@
     "server": "node server.js",
     "dev": "npm run server & npm run bot",
     "production": "NODE_ENV=production node start.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:qr": "node test_qr_contact_sharing.js"
   },
   "keywords": [],
   "author": "",

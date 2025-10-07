@@ -30,3 +30,10 @@ Thumbs.db
 tmp/
 temp/
 .vercel
+
+# Инвойсы и тестовая документация
+invoices/
+*.pdf
+TEST_REPORT.md
+INVOICE_TEST_GUIDE.md
+QR_CONTACT_SHARING_TEST.md
