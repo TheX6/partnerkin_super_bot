@@ -42,6 +42,7 @@ const cron = require('node-cron');
 const chrono = require('chrono-node');
 const { parse } = require('csv-parse/sync');
 const qrcode = require('qrcode');
+const axios = require('axios');
 
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
@@ -53,8 +54,101 @@ const bot = new TelegramBot(token, {
         params: {
             timeout: 10
         }
-    }
+    },
+    filepath: false,
+    baseApiUrl: `https://api.telegram.org`
 });
+
+// Handle polling errors
+bot.on('polling_error', (error) => {
+    if (error.code === 'EFATAL' && error.message.includes('ERR_UNESCAPED_CHARACTERS')) {
+        console.error('⚠️  URL encoding error detected, this is a known issue with the request library');
+        console.error('Bot will continue running, ignoring this error');
+        return;
+    }
+    console.error('❌ Polling error:', error.code, error.message);
+});
+
+// Wrap bot methods to use axios instead of request for problematic calls
+const originalSendMessage = bot.sendMessage.bind(bot);
+const originalSendPhoto = bot.sendPhoto.bind(bot);
+const originalEditMessageText = bot.editMessageText.bind(bot);
+const originalAnswerCallbackQuery = bot.answerCallbackQuery.bind(bot);
+
+bot.sendMessage = async function(chatId, text, options = {}) {
+    try {
+        return await originalSendMessage(chatId, text, options);
+    } catch (error) {
+        if (error.code === 'EFATAL' || error.message.includes('UNESCAPED_CHARACTERS')) {
+            console.log('⚠️  Using axios fallback for sendMessage');
+            const url = `https://api.telegram.org/bot${token}/sendMessage`;
+            const response = await axios.post(url, {
+                chat_id: chatId,
+                text: text,
+                ...options
+            });
+            return response.data.result;
+        }
+        throw error;
+    }
+};
+
+bot.sendPhoto = async function(chatId, photo, options = {}) {
+    try {
+        return await originalSendPhoto(chatId, photo, options);
+    } catch (error) {
+        if (error.code === 'EFATAL' || error.message.includes('UNESCAPED_CHARACTERS')) {
+            console.log('⚠️  Using axios fallback for sendPhoto');
+            const FormData = require('form-data');
+            const form = new FormData();
+            form.append('chat_id', chatId);
+            form.append('photo', photo, { filename: 'photo.jpg' });
+            if (options.caption) form.append('caption', options.caption);
+            if (options.parse_mode) form.append('parse_mode', options.parse_mode);
+
+            const url = `https://api.telegram.org/bot${token}/sendPhoto`;
+            const response = await axios.post(url, form, {
+                headers: form.getHeaders()
+            });
+            return response.data.result;
+        }
+        throw error;
+    }
+};
+
+bot.editMessageText = async function(text, options = {}) {
+    try {
+        return await originalEditMessageText(text, options);
+    } catch (error) {
+        if (error.code === 'EFATAL' || error.message.includes('UNESCAPED_CHARACTERS')) {
+            console.log('⚠️  Using axios fallback for editMessageText');
+            const url = `https://api.telegram.org/bot${token}/editMessageText`;
+            const response = await axios.post(url, {
+                text: text,
+                ...options
+            });
+            return response.data.result;
+        }
+        throw error;
+    }
+};
+
+bot.answerCallbackQuery = async function(callbackQueryId, options = {}) {
+    try {
+        return await originalAnswerCallbackQuery(callbackQueryId, options);
+    } catch (error) {
+        if (error.code === 'EFATAL' || error.message.includes('UNESCAPED_CHARACTERS')) {
+            console.log('⚠️  Using axios fallback for answerCallbackQuery');
+            const url = `https://api.telegram.org/bot${token}/answerCallbackQuery`;
+            const response = await axios.post(url, {
+                callback_query_id: callbackQueryId,
+                ...options
+            });
+            return response.data.result;
+        }
+        throw error;
+    }
+};
 
 // Глобальные переменные для состояний
 global.userScreenshots = {};
@@ -75,7 +169,9 @@ function scheduleTaskReminder(taskId, intervalMinutes, assigneeId, taskTitle) {
         const job = cron.schedule(cronPattern, () => {
             db.get("SELECT telegram_id FROM users WHERE id = ?", [assigneeId], (err, user) => {
                 if (user) {
-                    bot.sendMessage(user.telegram_id, `⏰ Напоминание по задаче:\n**${taskTitle}**`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(user.telegram_id, `⏰ Напоминание по задаче:\n**${taskTitle}**`, { parse_mode: 'Markdown' }).catch(err => {
+                        console.error('[REMINDER] Error sending message:', err.message);
+                    });
                 }
             });
         });
