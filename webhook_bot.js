@@ -24,8 +24,8 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Webhook endpoint
-app.post(`/bot${token}`, (req, res) => {
+// Webhook endpoint - catch ANY /bot* path
+app.post('/bot*', (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
 });
