@@ -3,6 +3,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const config = require('./config');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -100,18 +101,22 @@ app.listen(PORT, async () => {
     console.log(`🌐 Web App server running on port ${PORT}`);
     console.log(`📱 Access your app at: http://localhost:${PORT}`);
 
-    // Set webhook for production
+    // Set webhook for production using axios (avoids request library bug)
     if (process.env.RENDER_EXTERNAL_URL || process.env.RENDER === 'true') {
         const webhookUrl = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_URL;
         if (webhookUrl) {
             try {
                 const fullWebhookUrl = `${webhookUrl}/bot${config.TELEGRAM_TOKEN}`;
-                await bot.setWebHook(fullWebhookUrl);
+
+                // Use axios to set webhook (avoids ERR_UNESCAPED_CHARACTERS)
+                const setWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/setWebhook`;
+                await axios.post(setWebhookUrl, { url: fullWebhookUrl });
                 console.log(`✅ Webhook set to: ${fullWebhookUrl}`);
 
-                // Verify webhook
-                const webhookInfo = await bot.getWebHookInfo();
-                console.log(`📡 Webhook info:`, webhookInfo);
+                // Verify webhook using axios
+                const getWebhookUrl = `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/getWebhookInfo`;
+                const response = await axios.get(getWebhookUrl);
+                console.log(`📡 Webhook info:`, response.data.result);
             } catch (error) {
                 console.error('❌ Failed to set webhook:', error.message);
                 console.log('⚠️  Bot will not receive updates until webhook is set correctly');

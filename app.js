@@ -5811,10 +5811,12 @@ console.log('🚀 Бот "Жизнь в Партнеркине" запускае
 console.log('📋 Ctrl+C для остановки');
 
 // Remove bot commands menu completely (but /start will still work)
-bot.setMyCommands([]).then(() => {
+axios.post(`https://api.telegram.org/bot${token}/setMyCommands`, {
+    commands: []
+}).then(() => {
     console.log('✅ Меню команд бота полностью убрано');
 }).catch(err => {
-    console.error('❌ Ошибка при удалении команд меню:', err);
+    console.error('❌ Ошибка при удалении команд меню:', err.message);
 });
 
 // Initialize task reminders from DB after a short delay
@@ -5822,19 +5824,6 @@ setTimeout(initializeSchedules, 5000); // 5 second delay
 
 bot.on('error', (error) => {
     console.error('❌ Bot error:', error);
-});
-
-bot.on('polling_error', (error) => {
-    console.error('❌ Polling error:', error);
-    
-    // Перезапуск при ошибке polling
-    setTimeout(() => {
-        console.log('🔄 Attempting to restart polling...');
-        bot.stopPolling();
-        setTimeout(() => {
-            bot.startPolling();
-        }, 2000);
-    }, 3000);
 });
 
 function updateUserStatusesCron() {
