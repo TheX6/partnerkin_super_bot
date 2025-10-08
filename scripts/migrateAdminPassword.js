@@ -34,10 +34,10 @@ async function createAdminPasswordsTable() {
                     }
                 });
             } else {
-                // Для SQLite используем sqlite_master
+                // Для PostgreSQL используем information_schema
                 db.get(`
-                    SELECT name FROM sqlite_master
-                    WHERE type='table' AND name='admin_passwords'
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'admin_passwords'
                 `, [], (err, row) => {
                     if (err) {
                         reject(err);
@@ -68,7 +68,7 @@ async function createAdminPasswordsTable() {
                         )
                     `;
                 } else {
-                    // Для SQLite
+                    // Для PostgreSQL
                     createTableQuery = `
                         CREATE TABLE admin_passwords (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,

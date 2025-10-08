@@ -10,7 +10,11 @@
     "dev": "npm run server & npm run bot",
     "production": "NODE_ENV=production node webhook_bot.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "test:qr": "node test_qr_contact_sharing.js"
+    "test:qr": "node test_qr_contact_sharing.js",
+    "setup:pg": "echo 'Setting up PostgreSQL environment...' && cp .env.example .env",
+    "db:init": "echo 'Initializing database...' && node scripts/migrateToPostgresql.js",
+    "db:backup": "echo 'Creating database backup...' && node scripts/backupDatabase.js",
+    "db:restore": "echo 'Restoring database from backup...' && node scripts/restoreDatabase.js"
   },
   "keywords": [],
   "author": "",
@@ -25,8 +29,8 @@
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.66.0",
     "pdfkit": "^0.17.2",
+    "pg": "^8.11.3",
     "qrcode": "^1.5.4",
-    "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3"
   }
 }

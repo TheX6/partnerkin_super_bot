@@ -4,18 +4,17 @@ module.exports = {
     // Токен Telegram бота - получите в @BotFather
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN || 'ВАШ_ТОКЕН_ЗДЕСЬ',
 
-    // Настройки базы данных
+    // Настройки базы данных PostgreSQL
     DATABASE: {
-        type: process.env.DB_TYPE || 'sqlite', // 'sqlite' или 'postgresql'
-        name: process.env.DB_FILENAME || 'partnerkino.db',
+        type: 'postgresql', // Только PostgreSQL
         backup_interval: 24 * 60 * 60 * 1000, // 24 часа в миллисекундах
-        postgres: {
-            host: process.env.DB_HOST || 'localhost',
-            port: process.env.DB_PORT || 5432,
-            database: process.env.DB_NAME || 'partnerkino',
-            user: process.env.DB_USER || 'postgres',
-            password: process.env.DB_PASSWORD || 'password'
-        }
+        host: process.env.DB_HOST || 'localhost',
+        port: process.env.DB_PORT || 5432,
+        database: process.env.DB_NAME || 'partnerkino',
+        user: process.env.DB_USER || 'postgres',
+        password: process.env.DB_PASSWORD || 'password',
+        ssl: process.env.DB_SSL || 'false',
+        connectionTimeoutMillis: process.env.DB_CONNECTION_TIMEOUT || 10000
     },
 
     // Настройки админа

@@ -46,14 +46,14 @@ function validateEnvironment() {
             description: 'Тип базы данных',
             validator: (value) => {
                 if (!value) return true; // Опционально
-                return ['sqlite', 'postgresql'].includes(value);
+                return ['postgresql'].includes(value);
             }
         },
         {
             name: 'DB_HOST',
             description: 'Хост базы данных',
             validator: (value) => {
-                if (!value) return true; // Опционально для SQLite
+                if (!value) return true; // Опционально
                 return typeof value === 'string' && value.length > 0;
             }
         },
@@ -61,7 +61,7 @@ function validateEnvironment() {
             name: 'DB_PORT',
             description: 'Порт базы данных',
             validator: (value) => {
-                if (!value) return true; // Опционально для SQLite
+                if (!value) return true; // Опционально
                 const port = parseInt(value);
                 return !isNaN(port) && port > 0 && port <= 65535;
             }
@@ -78,7 +78,7 @@ function validateEnvironment() {
             name: 'DB_USER',
             description: 'Пользователь базы данных',
             validator: (value) => {
-                if (!value) return true; // Опционально для SQLite
+                if (!value) return true; // Опционально
                 return typeof value === 'string' && value.length > 0;
             }
         },
@@ -86,7 +86,7 @@ function validateEnvironment() {
             name: 'DB_PASSWORD',
             description: 'Пароль базы данных',
             validator: (value) => {
-                if (!value) return true; // Опционально для SQLite
+                if (!value) return true; // Опционально
                 return typeof value === 'string' && value.length > 0;
             }
         },
@@ -233,7 +233,7 @@ function validateAndExit() {
 function getConfigInfo() {
     return {
         nodeEnv: process.env.NODE_ENV || 'development',
-        dbType: process.env.DB_TYPE || 'sqlite',
+        dbType: process.env.DB_TYPE || 'postgresql',
         hasTelegramToken: !!process.env.TELEGRAM_TOKEN,
         hasAdminPassword: !!process.env.ADMIN_PASSWORD,
         usesDefaultAdminPassword: process.env.ADMIN_PASSWORD === 'partnerkin1212',

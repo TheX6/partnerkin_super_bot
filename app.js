@@ -34,7 +34,6 @@ process.on('SIGINT', () => {
     process.exit(0);
 });
 const TelegramBot = require('node-telegram-bot-api');
-const sqlite3 = require('sqlite3').verbose();
 const config = require('./config');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
@@ -47,12 +46,22 @@ const axios = require('axios');
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
 
-// Initialize bot WITHOUT polling - we'll use webhooks instead
+// Determine bot mode based on environment
+// Use webhook mode for production (when RENDER_EXTERNAL_URL is present)
+// Use polling mode for local development
+// Or use BOT_MODE environment variable if set explicitly
+const isProduction = process.env.RENDER_EXTERNAL_URL ? true : false;
+const botMode = process.env.BOT_MODE || (isProduction ? 'webhook' : 'polling');
+const usePolling = botMode === 'polling';
+
+// Initialize bot with appropriate mode
 const bot = new TelegramBot(token, {
-    polling: false,
+    polling: usePolling,
     filepath: false,
-    webHook: false
+    webHook: !usePolling
 });
+
+console.log(`🤖 Bot initialized in ${botMode} mode (polling: ${usePolling})`);
 
 // Wrap bot methods to use axios instead of request for problematic calls
 const originalSendMessage = bot.sendMessage.bind(bot);
@@ -195,7 +204,7 @@ function initializeSchedules() {
 }
 
 // База данных
-const db = new sqlite3.Database(config.DATABASE.name);
+const db = require('./database');
 
 // Создание таблиц
 db.serialize(() => {
@@ -215,13 +224,6 @@ db.serialize(() => {
         position_level TEXT
     )`);
 
-    // Добавляем поле position_level в существующую таблицу users (если оно не существует)
-    db.run(`ALTER TABLE users ADD COLUMN position_level TEXT`, (err) => {
-        // Игнорируем ошибку если поле уже существует
-        if (err && !err.message.includes('duplicate column name')) {
-            console.error('Error adding position_level column:', err);
-        }
-    });
 
     db.run(`CREATE TABLE IF NOT EXISTS intern_progress (
         id INTEGER PRIMARY KEY,
@@ -372,7 +374,7 @@ db.serialize(() => {
 
     columnExists('tasks', 'started_at', (exists) => {
         if (!exists) {
-            db.run("ALTER TABLE tasks ADD COLUMN started_at DATETIME", (err) => {
+            db.run("ALTER TABLE tasks ADD COLUMN started_at TIMESTAMP", (err) => {
                 if (err) console.log("ALTER tasks.started_at error:", err.message);
             });
         }
@@ -430,12 +432,16 @@ db.serialize(() => {
 
     // Helper function to check if column exists
     function columnExists(table, column, callback) {
-        db.all(`PRAGMA table_info(${table})`, (err, rows) => {
+        db.all(`
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = $2
+        `, [table, column], (err, rows) => {
             if (err) {
                 callback(false);
                 return;
             }
-            const exists = rows.some(row => row.name === column);
+            const exists = rows.length > 0;
             callback(exists);
         });
     }
@@ -512,7 +518,7 @@ db.serialize(() => {
     });
     columnExists('users', 'last_activity', (exists) => {
         if (!exists) {
-            db.run("ALTER TABLE users ADD COLUMN last_activity DATETIME", (err) => {
+            db.run("ALTER TABLE users ADD COLUMN last_activity TIMESTAMP", (err) => {
                 if (err) {
                     console.log("ALTER last_activity error:", err.message);
                 } else {
@@ -533,7 +539,7 @@ db.serialize(() => {
 
     columnExists('users', 'graduated_at', (exists) => {
         if (!exists) {
-            db.run("ALTER TABLE users ADD COLUMN graduated_at DATETIME", (err) => {
+            db.run("ALTER TABLE users ADD COLUMN graduated_at TIMESTAMP", (err) => {
                 if (err) console.log("ALTER graduated_at error:", err.message);
             });
         }

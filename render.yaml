@@ -15,9 +15,29 @@ services:
       - key: ADMIN_PASSWORD
         sync: false
       - key: DB_TYPE
-        value: sqlite
-      - key: DB_FILENAME
-        value: /opt/render/project/src/partnerkino.db
+        value: postgresql
+      - key: DB_HOST
+        fromDatabase:
+          name: partnerkin-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: partnerkin-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: partnerkin-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: partnerkin-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: partnerkin-db
+          property: password
+      - key: DB_SSL
+        value: "true"
       - key: RENDER
         value: true
       - key: RENDER_EXTERNAL_URL
@@ -25,5 +45,15 @@ services:
           type: web
           name: partnerkin-bot
           property: url
+  # PostgreSQL Database Service
+  - type: pserv
+    name: partnerkin-db
+    runtime: postgres
+    plan: starter
+    region: oregon
+    branch: main
+    healthCheckPath: /
+    databases:
+      - name: partnerkin-db
     autoDeploy: true
     healthCheckPath: /health

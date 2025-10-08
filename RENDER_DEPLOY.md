@@ -27,8 +27,12 @@
 TELEGRAM_TOKEN=7774658901:AAH2hgG6VZotlEBrts81LUFME8K6v4jGQQc
 NODE_ENV=production
 ADMIN_PASSWORD=partnerkin1212
-DB_TYPE=sqlite
-DB_FILENAME=/opt/render/project/src/partnerkino.db
+DB_TYPE=postgresql
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=partnerkino
+DB_USER=postgres
+DB_PASSWORD=your_password
 RENDER=true
 ```
 
@@ -50,7 +54,7 @@ RENDER=true
 ⚠️ **Важно**:
 - Бесплатный сервис засыпает после 15 минут бездействия
 - При первом запросе после сна сервис "просыпается" (может занять 30-60 секунд)
-- База данных SQLite сохраняется между перезапусками
+- База данных PostgreSQL сохраняется между перезапусками
 
 ## Обновление бота
 
