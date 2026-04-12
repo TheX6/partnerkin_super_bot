@@ -1,0 +1,46 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - nightly # Runs when pushing to the nightly branch
+      - main # Runs when pushing to the main branch
+  pull_request:
+    branches:
+      - nightly # Runs when a pull request is made to the nightly branch
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Установка Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20.x'
+      - name: Установка зависимостей
+        run: npm ci
+      - name: Запуск тестов
+        run: echo "Тесты не настроены, пропускаем"
+
+  deploy_to_staging:
+    needs: build_and_test
+    if: github.ref == 'refs/heads/nightly'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Развертывание на тестовом сервере
+        run: |
+          echo "Развертываем на тестовом сервере..."
+          # Ваш скрипт для развертывания на тестовом сервере
+
+  deploy_to_production:
+    needs: build_and_test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Развертывание на продакшене
+        run: |
+          echo "Развертываем на продакшене!"
+          # Ваш скрипт для развертывания на продакшене

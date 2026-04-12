@@ -1,0 +1,1712 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPartnerkin - Полное руководство</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 80px 60px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            animation: pulse 20s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
+        .hero h1 {
+            font-size: 4em;
+            margin-bottom: 30px;
+            text-shadow: 3px 3px 6px rgba(0,0,0,0.3);
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .subtitle {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            opacity: 0.95;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .tagline {
+            font-size: 1.3em;
+            font-style: italic;
+            opacity: 0.9;
+            max-width: 800px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .nav {
+            background: #f8f9fa;
+            padding: 25px 60px;
+            border-bottom: 4px solid #667eea;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 25px;
+            justify-content: center;
+        }
+
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 1.1em;
+            padding: 12px 24px;
+            border-radius: 10px;
+            transition: all 0.3s;
+            display: block;
+        }
+
+        .nav a:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .content {
+            padding: 80px 60px;
+        }
+
+        .section {
+            margin-bottom: 100px;
+            scroll-margin-top: 100px;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .section-header h2 {
+            font-size: 3.5em;
+            color: #667eea;
+            margin-bottom: 20px;
+            position: relative;
+            display: inline-block;
+        }
+
+        .section-header h2::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 5px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 3px;
+        }
+
+        .section-header p {
+            font-size: 1.4em;
+            color: #666;
+            max-width: 800px;
+            margin: 30px auto 0;
+        }
+
+        .mega-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 50px;
+            border-radius: 20px;
+            margin: 40px 0;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border: 3px solid #667eea;
+        }
+
+        .mega-card h3 {
+            font-size: 2.5em;
+            color: #667eea;
+            margin-bottom: 30px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .mega-card h4 {
+            font-size: 1.8em;
+            color: #764ba2;
+            margin: 40px 0 20px;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 40px;
+            margin: 40px 0;
+        }
+
+        .feature-card {
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border-left: 6px solid #667eea;
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.2);
+        }
+
+        .feature-card h5 {
+            font-size: 1.6em;
+            color: #667eea;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .feature-icon {
+            font-size: 2.5em;
+            width: 70px;
+            height: 70px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .persona-section {
+            background: white;
+            padding: 50px;
+            border-radius: 20px;
+            margin: 40px 0;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .persona-header {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            margin-bottom: 40px;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #667eea;
+        }
+
+        .persona-icon {
+            font-size: 5em;
+            width: 120px;
+            height: 120px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .persona-title h3 {
+            font-size: 2.5em;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .persona-title p {
+            font-size: 1.3em;
+            color: #666;
+        }
+
+        .needs-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin: 30px 0;
+        }
+
+        .need-item {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 5px solid #28a745;
+        }
+
+        .need-item h5 {
+            color: #28a745;
+            font-size: 1.3em;
+            margin-bottom: 15px;
+        }
+
+        .instruction-box {
+            background: linear-gradient(135deg, #fff3cd 0%, #fff9e6 100%);
+            padding: 35px;
+            border-radius: 15px;
+            border-left: 6px solid #ffc107;
+            margin: 30px 0;
+        }
+
+        .instruction-box h4 {
+            color: #856404;
+            font-size: 1.6em;
+            margin-bottom: 20px;
+        }
+
+        .step-list {
+            counter-reset: step-counter;
+            list-style: none;
+            margin: 20px 0;
+        }
+
+        .step-list li {
+            counter-increment: step-counter;
+            padding: 20px 20px 20px 80px;
+            margin: 20px 0;
+            background: white;
+            border-radius: 12px;
+            position: relative;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+        }
+
+        .step-list li::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 45px;
+            height: 45px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.3em;
+        }
+
+        .benefit-badge {
+            display: inline-block;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #28a745, #20c997);
+            color: white;
+            border-radius: 25px;
+            font-weight: 700;
+            margin: 8px;
+            font-size: 1.1em;
+            box-shadow: 0 3px 10px rgba(40, 167, 69, 0.3);
+        }
+
+        .module-showcase {
+            background: white;
+            padding: 50px;
+            border-radius: 20px;
+            margin: 40px 0;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .module-header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 40px;
+            border-radius: 15px;
+            margin-bottom: 40px;
+        }
+
+        .module-header h3 {
+            font-size: 2.8em;
+            margin-bottom: 15px;
+        }
+
+        .module-header p {
+            font-size: 1.4em;
+            opacity: 0.95;
+        }
+
+        .function-item {
+            background: #f8f9fa;
+            padding: 35px;
+            border-radius: 15px;
+            margin: 25px 0;
+            border-left: 5px solid #667eea;
+        }
+
+        .function-item h4 {
+            color: #667eea;
+            font-size: 1.8em;
+            margin-bottom: 20px;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 40px 0;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border-radius: 15px;
+            overflow: hidden;
+        }
+
+        .comparison-table th {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 25px;
+            font-size: 1.3em;
+            text-align: left;
+        }
+
+        .comparison-table td {
+            padding: 25px;
+            border-bottom: 2px solid #e9ecef;
+            font-size: 1.1em;
+        }
+
+        .comparison-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            padding: 40px;
+            border-radius: 15px;
+            border-left: 6px solid #28a745;
+            margin: 40px 0;
+        }
+
+        .highlight-box h4 {
+            color: #155724;
+            font-size: 2em;
+            margin-bottom: 25px;
+        }
+
+        .warning-box {
+            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+            padding: 40px;
+            border-radius: 15px;
+            border-left: 6px solid #dc3545;
+            margin: 40px 0;
+        }
+
+        .warning-box h4 {
+            color: #721c24;
+            font-size: 2em;
+            margin-bottom: 25px;
+        }
+
+        .info-box {
+            background: linear-gradient(135deg, #d1ecf1 0%, #bee5eb 100%);
+            padding: 40px;
+            border-radius: 15px;
+            border-left: 6px solid #17a2b8;
+            margin: 40px 0;
+        }
+
+        .info-box h4 {
+            color: #0c5460;
+            font-size: 2em;
+            margin-bottom: 25px;
+        }
+
+        .stats-showcase {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+            margin: 50px 0;
+        }
+
+        .stat-box {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 50px 30px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s;
+        }
+
+        .stat-box:hover {
+            transform: scale(1.05);
+        }
+
+        .stat-number {
+            font-size: 4.5em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .stat-label {
+            font-size: 1.4em;
+            opacity: 0.95;
+        }
+
+        .footer {
+            background: #2c3e50;
+            color: white;
+            padding: 60px;
+            text-align: center;
+        }
+
+        .footer h3 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+        }
+
+        .footer p {
+            font-size: 1.2em;
+            margin: 15px 0;
+            opacity: 0.9;
+        }
+
+        ul {
+            margin: 20px 0;
+            padding-left: 30px;
+        }
+
+        li {
+            margin: 15px 0;
+            font-size: 1.1em;
+            line-height: 1.8;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.5em; }
+            .content { padding: 40px 30px; }
+            .section-header h2 { font-size: 2.5em; }
+            .mega-card { padding: 30px; }
+            .feature-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="hero">
+            <h1>🎯 VPartnerkin</h1>
+            <div class="subtitle">Универсальная платформа для управления корпоративной жизнью</div>
+            <div class="tagline">Единое пространство для обучения, работы, развлечений и роста каждого сотрудника</div>
+        </div>
+
+        <nav class="nav">
+            <ul>
+                <li><a href="#overview">Обзор</a></li>
+                <li><a href="#personas">Для кого</a></li>
+                <li><a href="#modules">Модули</a></li>
+                <li><a href="#work">Работа</a></li>
+                <li><a href="#learning">Обучение</a></li>
+                <li><a href="#fun">Развлечения</a></li>
+                <li><a href="#social">Социальное</a></li>
+                <li><a href="#instructions">Инструкции</a></li>
+            </ul>
+        </nav>
+
+        <div class="content">
+            <!-- ОБЗОР -->
+            <section id="overview" class="section">
+                <div class="section-header">
+                    <h2>🌟 Что такое VPartnerkin?</h2>
+                    <p>Это не просто бот - это целая экосистема для корпоративной жизни, объединяющая всё необходимое в одном месте</p>
+                </div>
+
+                <div class="stats-showcase">
+                    <div class="stat-box">
+                        <div class="stat-number">10+</div>
+                        <div class="stat-label">Модулей функционала</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number">100+</div>
+                        <div class="stat-label">Возможностей</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number">24/7</div>
+                        <div class="stat-label">Доступность</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number">∞</div>
+                        <div class="stat-label">Масштабируемость</div>
+                    </div>
+                </div>
+
+                <div class="mega-card">
+                    <h3>💡 Философия продукта</h3>
+                    <p style="font-size: 1.3em; line-height: 2; margin-top: 20px;">
+                        VPartnerkin создан для того, чтобы <strong>упростить, автоматизировать и геймифицировать</strong> все аспекты корпоративной жизни.
+                        От первого дня новичка до карьерного роста опытного сотрудника - бот сопровождает каждого на всех этапах,
+                        делая работу <strong>эффективнее</strong>, а корпоративную культуру - <strong>живее и интереснее</strong>.
+                    </p>
+
+                    <div style="margin-top: 40px;">
+                        <span class="benefit-badge">🎯 Автоматизация рутины</span>
+                        <span class="benefit-badge">🎮 Геймификация процессов</span>
+                        <span class="benefit-badge">📊 Прозрачность прогресса</span>
+                        <span class="benefit-badge">🤝 Социальное взаимодействие</span>
+                        <span class="benefit-badge">🚀 Непрерывное развитие</span>
+                        <span class="benefit-badge">💰 Система мотивации</span>
+                    </div>
+                </div>
+
+                <div class="highlight-box">
+                    <h4>🎁 Что получает компания?</h4>
+                    <ul>
+                        <li><strong>Автоматизация онбординга</strong> - новички быстрее входят в курс дела</li>
+                        <li><strong>Повышение вовлеченности</strong> - сотрудники активнее участвуют в жизни компании</li>
+                        <li><strong>Прозрачность процессов</strong> - все метрики и прогресс в одном месте</li>
+                        <li><strong>Экономия времени HR</strong> - рутинные процессы автоматизированы</li>
+                        <li><strong>Улучшение коммуникации</strong> - все каналы в одном интерфейсе</li>
+                        <li><strong>Развитие корпоративной культуры</strong> - через игровые механики и социальные функции</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- ДЛЯ КОГО -->
+            <section id="personas" class="section">
+                <div class="section-header">
+                    <h2>👥 Для кого создан VPartnerkin?</h2>
+                    <p>Бот закрывает уникальные потребности каждой категории пользователей</p>
+                </div>
+
+                <!-- СТАЖЕРЫ -->
+                <div class="persona-section">
+                    <div class="persona-header">
+                        <div class="persona-icon">🎓</div>
+                        <div class="persona-title">
+                            <h3>Стажеры и новички</h3>
+                            <p>Первые шаги в компании - комфортно и с поддержкой</p>
+                        </div>
+                    </div>
+
+                    <h4 style="font-size: 2em; color: #667eea; margin: 40px 0 30px;">Какие потребности закрывает:</h4>
+
+                    <div class="needs-list">
+                        <div class="need-item">
+                            <h5>📚 Структурированное обучение</h5>
+                            <p>Четкий путь из 3 обязательных тестов с понятными целями и отслеживанием прогресса</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🎯 Понимание целей</h5>
+                            <p>Видно, что нужно сделать для перехода на следующий уровень и получения статуса полноценного сотрудника</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🤝 Знакомство с командой</h5>
+                            <p>После прохождения тестов - возможность представиться всей команде через приветственное сообщение</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📊 Мотивация через прогресс</h5>
+                            <p>Визуализация достижений: "Завершено: 2/3 тестов" - понятно, сколько осталось</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>💰 Награда за усилия</h5>
+                            <p>400 стартовых П-коинов после завершения обучения - сразу можно начать пользоваться магазином</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🎉 Признание достижения</h5>
+                            <p>Торжественное сообщение о завершении стажировки, статус Junior, доступ ко всем функциям</p>
+                        </div>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>💡 Жизненный путь стажера в боте</h4>
+                        <ol class="step-list">
+                            <li><strong>День 1:</strong> Регистрация, выбор роли "Стажер", заполнение профиля</li>
+                            <li><strong>Неделя 1-2:</strong> Прохождение курса "Онбординг в Партнеркин", отправка скриншота результата</li>
+                            <li><strong>Неделя 2-3:</strong> Курс "Основы эффективной коммуникации"</li>
+                            <li><strong>Неделя 3-4:</strong> Курс "Эффективная работа в режиме многозадачности"</li>
+                            <li><strong>После 3-го теста:</strong> Получение 400 П-коинов, написание приветствия команде</li>
+                            <li><strong>Новый статус:</strong> Старичок Junior с полным доступом ко всем функциям</li>
+                            <li><strong>Через 3 месяца:</strong> Автоматическое повышение до Middle</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <!-- СТАРИЧКИ -->
+                <div class="persona-section">
+                    <div class="persona-header">
+                        <div class="persona-icon">👔</div>
+                        <div class="persona-title">
+                            <h3>Опытные сотрудники (Старички)</h3>
+                            <p>Полноценные члены команды с доступом ко всему функционалу</p>
+                        </div>
+                    </div>
+
+                    <h4 style="font-size: 2em; color: #667eea; margin: 40px 0 30px;">Какие потребности закрывает:</h4>
+
+                    <div class="needs-list">
+                        <div class="need-item">
+                            <h5>💼 Управление задачами</h5>
+                            <p>Создание, делегирование и отслеживание задач с уведомлениями и дедлайнами</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📚 Непрерывное обучение</h5>
+                            <p>4 курса повышения квалификации с получением П-коинов за каждый</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🎮 Геймификация и мотивация</h5>
+                            <p>PVP сражения, рейтинги, П-коины, магазин реальных наград</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🤝 Социальное взаимодействие</h5>
+                            <p>Подарки коллегам, достижения, лайки, комментарии - полноценная социальная сеть</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🎯 Участие в мероприятиях</h5>
+                            <p>Зарядка, покер, корпоративы, тренинги - с удобной записью и напоминаниями</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🏖️ Управление отпусками</h5>
+                            <p>Подача заявок, отслеживание баланса дней, прозрачный процесс одобрения</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📈 Карьерный рост</h5>
+                            <p>Видимый прогресс от Junior до Senior/Head с автоматическими повышениями</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>💰 Прозрачная система наград</h5>
+                            <p>Понятно, за что получаешь П-коины и на что их можно потратить</p>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>🎁 Что получают опытные сотрудники:</h4>
+                        <ul>
+                            <li><strong>Упрощение коммуникации</strong> - все в одном месте, не нужно искать информацию в разных чатах</li>
+                            <li><strong>Мотивация через игру</strong> - работа становится интереснее благодаря PVP, рейтингам и наградам</li>
+                            <li><strong>Признание заслуг</strong> - система достижений "Похвастаться" для публичного признания успехов</li>
+                            <li><strong>Контроль задач</strong> - удобный таск-трекер лучше любых таблиц и планировщиков</li>
+                            <li><strong>Развитие навыков</strong> - курсы повышения квалификации с материальной мотивацией</li>
+                            <li><strong>Work-Life баланс</strong> - управление отпусками, участие в мероприятиях, общение с коллегами</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- АДМИНИСТРАТОРЫ -->
+                <div class="persona-section">
+                    <div class="persona-header">
+                        <div class="persona-icon">👨‍💼</div>
+                        <div class="persona-title">
+                            <h3>Администраторы (HR, руководители)</h3>
+                            <p>Полный контроль и управление всеми процессами</p>
+                        </div>
+                    </div>
+
+                    <h4 style="font-size: 2em; color: #667eea; margin: 40px 0 30px;">Какие потребности закрывает:</h4>
+
+                    <div class="needs-list">
+                        <div class="need-item">
+                            <h5>🎓 Контроль обучения</h5>
+                            <p>Проверка тестов стажеров с фото, одобрение/отклонение заявок</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>👥 Управление пользователями</h5>
+                            <p>Полная информация о каждом, изменение балансов, уровней, удаление</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📅 Организация мероприятий</h5>
+                            <p>Создание событий, управление слотами, просмотр записей</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>🏖️ Обработка отпусков</h5>
+                            <p>Рассмотрение заявок, управление балансами, прозрачный учет</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📊 Аналитика и статистика</h5>
+                            <p>Подробные отчеты по всем метрикам системы</p>
+                        </div>
+                        <div class="need-item">
+                            <h5>📢 Коммуникация с командой</h5>
+                            <p>Массовые рассылки всем или по группам (стажеры/старички)</p>
+                        </div>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>🎯 Преимущества для HR и руководства:</h4>
+                        <ul>
+                            <li><strong>Экономия времени:</strong> Автоматизация онбординга экономит до 80% времени HR на адаптацию новичков</li>
+                            <li><strong>Прозрачность:</strong> Весь прогресс каждого сотрудника виден в режиме реального времени</li>
+                            <li><strong>Вовлеченность:</strong> Геймификация повышает активность сотрудников на 200%</li>
+                            <li><strong>Аналитика:</strong> Понятно, кто активен, кто развивается, где узкие места</li>
+                            <li><strong>Единая платформа:</strong> Все HR-процессы в одном месте - от обучения до отпусков</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- МОДУЛИ -->
+            <section id="modules" class="section">
+                <div class="section-header">
+                    <h2>🎯 10+ модулей функционала</h2>
+                    <p>Каждый модуль - это отдельная система, работающая в единой экосистеме</p>
+                </div>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">📚</div>
+                        <h5>Обучение и развитие</h5>
+                        <p>Система тестов для стажеров (3) и курсов для старичков (4) с автоматической проверкой и прогрессом</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">📋</div>
+                        <h5>Таск-менеджер</h5>
+                        <p>Полноценный трекер задач с созданием, делегированием, комментариями, приоритетами и уведомлениями</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">💰</div>
+                        <h5>Игровая экономика</h5>
+                        <p>Внутренняя валюта П-коины с прозрачной системой заработка и траты через магазин наград</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">⚔️</div>
+                        <h5>PVP Сражения</h5>
+                        <p>Соревновательная механика с энергией, ставками и рейтингом для геймификации</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🎯</div>
+                        <h5>Мероприятия</h5>
+                        <p>Система записи на зарядку, покер, тренинги, корпоративы с управлением слотами</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🎉</div>
+                        <h5>Достижения</h5>
+                        <p>Социальная функция "Похвастаться" с лайками, комментариями и рассылкой команде</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🏖️</div>
+                        <h5>Управление отпусками</h5>
+                        <p>Подача заявок, отслеживание балансов, одобрение HR с автоматическим учетом</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🎁</div>
+                        <h5>Подарки коллегам</h5>
+                        <p>Передача П-коинов с сообщениями, история транзакций, лимиты безопасности</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">📊</div>
+                        <h5>Рейтинги</h5>
+                        <p>Топ игроков по П-коинам, победам в PVP, выполненным задачам</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">📱</div>
+                        <h5>CRM контактов</h5>
+                        <p>База контактов компаний и конференций с QR-кодами и экспортом</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">📄</div>
+                        <h5>Генератор инвойсов</h5>
+                        <p>Создание PDF-инвойсов для продажников с автоматическим заполнением</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">👨‍💼</div>
+                        <h5>Админ-панель</h5>
+                        <p>Полное управление: пользователи, тесты, мероприятия, статистика, рассылки</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- РАБОТА -->
+            <section id="work" class="section">
+                <div class="section-header">
+                    <h2>💼 Модуль "РАБОТА"</h2>
+                    <p>Всё для эффективного управления рабочими процессами</p>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>📋 Таск-менеджер</h3>
+                        <p>Полноценная система управления задачами</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>🎯 Создание задач</h4>
+                        <p><strong>Кто может:</strong> Любой старичок (не стажер)</p>
+                        <p><strong>Для кого:</strong> Любой зарегистрированный пользователь</p>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Как создать задачу:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в раздел <strong>"📋 Работа"</strong> → <strong>"Создать задачу"</strong></li>
+                            <li>Ввести <strong>название задачи</strong> (например: "Подготовить отчет по продажам")</li>
+                            <li>Описать <strong>детали задачи</strong> (что именно нужно сделать)</li>
+                            <li>Выбрать <strong>приоритет</strong>: низкий / средний / высокий</li>
+                            <li>Указать <strong>срок выполнения</strong> (дата или "завтра", "через неделю")</li>
+                            <li>Выбрать <strong>исполнителя</strong> из списка пользователей</li>
+                            <li>Указать <strong>награду в П-коинах</strong> (опционально)</li>
+                            <li>Подтвердить создание</li>
+                        </ol>
+
+                        <div class="info-box">
+                            <h4>💡 Что происходит после создания:</h4>
+                            <ul>
+                                <li>Исполнитель получает уведомление о новой задаче</li>
+                                <li>Задача появляется в разделе "Мои задачи"</li>
+                                <li>Каждое утро в 9:00 - напоминание о невыполненных задачах</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>✅ Выполнение задач</h4>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Жизненный цикл задачи:</h5>
+                        <ol class="step-list">
+                            <li><strong>Получение уведомления:</strong> "У вас новая задача от @username"</li>
+                            <li><strong>Просмотр:</strong> Зайти в "Мои задачи" → увидеть детали</li>
+                            <li><strong>Принятие решения:</strong>
+                                <ul style="margin-top: 15px;">
+                                    <li>✅ <strong>Принять</strong> - задача переходит в статус "В работе"</li>
+                                    <li>❌ <strong>Отклонить</strong> - нужно указать причину</li>
+                                    <li>⏸️ <strong>Отложить</strong> - предложить новый срок</li>
+                                </ul>
+                            </li>
+                            <li><strong>Работа над задачей:</strong> В любой момент можно добавить комментарий</li>
+                            <li><strong>Завершение:</strong> Нажать "Отметить выполненной"</li>
+                            <li><strong>Награда:</strong> Автоматическое начисление П-коинов (если указаны)</li>
+                        </ol>
+
+                        <div class="highlight-box">
+                            <h4>🎁 Преимущества системы задач:</h4>
+                            <ul>
+                                <li><strong>Ничего не забудется:</strong> Утренние напоминания о всех активных задачах</li>
+                                <li><strong>Прозрачность:</strong> Создатель видит статус задачи в реальном времени</li>
+                                <li><strong>Коммуникация:</strong> Комментарии вместо длинных переписок</li>
+                                <li><strong>Мотивация:</strong> П-коины за выполнение задач</li>
+                                <li><strong>Контроль:</strong> История всех задач, фильтры, поиск</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>💬 Комментарии к задачам</h4>
+                        <p>Каждая задача - это мини-чат для обсуждения деталей:</p>
+                        <ul>
+                            <li>Задавать уточняющие вопросы</li>
+                            <li>Делиться прогрессом</li>
+                            <li>Сообщать о проблемах</li>
+                            <li>Прикреплять результаты</li>
+                        </ul>
+                        <p style="margin-top: 20px;"><strong>Уведомления:</strong> Все участники получают уведомление о новом комментарии</p>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🏖️ Управление отпусками</h3>
+                        <p>Прозрачная система заявок и учета отпускных дней</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>📝 Подача заявки на отпуск</h4>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Как подать заявку:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"💼 Работа"</strong> → <strong>"🏖️ Отпуска"</strong></li>
+                            <li>Нажать <strong>"Подать заявку"</strong></li>
+                            <li>Выбрать <strong>тип отпуска</strong>: оплачиваемый / за свой счет</li>
+                            <li>Указать <strong>даты</strong>: с какого числа по какое</li>
+                            <li>Написать <strong>причину/комментарий</strong> (опционально)</li>
+                            <li>Система автоматически рассчитает количество дней</li>
+                            <li>Отправить заявку</li>
+                        </ol>
+
+                        <div class="info-box">
+                            <h4>📊 Что видит сотрудник:</h4>
+                            <ul>
+                                <li><strong>Мой баланс:</strong> Сколько дней отпуска доступно в этом году</li>
+                                <li><strong>Использовано:</strong> Сколько дней уже взято</li>
+                                <li><strong>Ожидает одобрения:</strong> Дни из заявок на рассмотрении</li>
+                                <li><strong>Остаток:</strong> Сколько еще можно взять</li>
+                            </ul>
+                        </div>
+
+                        <div class="highlight-box">
+                            <h4>✅ Преимущества системы:</h4>
+                            <ul>
+                                <li>Не нужно писать заявления от руки</li>
+                                <li>Автоматический расчет дней</li>
+                                <li>Мгновенное уведомление о решении</li>
+                                <li>Прозрачный учет баланса</li>
+                                <li>История всех отпусков</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>📱 CRM и контакты</h3>
+                        <p>База контактов компаний и конференций</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>📇 Управление контактами</h4>
+
+                        <p style="font-size: 1.2em; margin-bottom: 30px;">
+                            Идеально для продажников и сотрудников, которые работают с партнерами.
+                        </p>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Что можно делать:</h5>
+                        <ul>
+                            <li><strong>Добавлять контакты компаний:</strong> Название, контактное лицо, должность, телефон, email, Telegram, заметки</li>
+                            <li><strong>Сохранять контакты с конференций:</strong> Кого встретили, где, какие договоренности</li>
+                            <li><strong>Генерировать QR-коды:</strong> Для быстрого обмена контактами</li>
+                            <li><strong>Искать и фильтровать:</strong> Быстро найти нужную компанию или человека</li>
+                            <li><strong>Экспортировать:</strong> Выгрузить контакты в удобном формате</li>
+                        </ul>
+
+                        <div class="info-box">
+                            <h4>💼 Для кого полезно:</h4>
+                            <ul>
+                                <li><strong>Продажникам:</strong> База клиентов и партнеров всегда под рукой</li>
+                                <li><strong>HR:</strong> Контакты кандидатов, рекрутеров, агентств</li>
+                                <li><strong>Маркетологам:</strong> Блогеры, площадки, партнеры по коллаборациям</li>
+                                <li><strong>Всем:</strong> Единая база контактов компании</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>📄 Генератор инвойсов</h4>
+
+                        <p style="font-size: 1.2em; margin-bottom: 30px;">
+                            Для продажников - быстрое создание профессиональных инвойсов в PDF.
+                        </p>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Как создать инвойс:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"💼 Работа"</strong> → <strong>"📄 Инвойсы"</strong></li>
+                            <li>Заполнить данные:
+                                <ul style="margin-top: 15px;">
+                                    <li>Название проекта</li>
+                                    <li>Описание услуг</li>
+                                    <li>Сумма</li>
+                                    <li>Реквизиты плательщика</li>
+                                    <li>Реквизиты получателя</li>
+                                </ul>
+                            </li>
+                            <li>Система генерирует красивый PDF с логотипом</li>
+                            <li>Скачать и отправить клиенту</li>
+                        </ol>
+
+                        <div class="highlight-box">
+                            <h4>🎯 Преимущества:</h4>
+                            <ul>
+                                <li>Не нужны сторонние сервисы</li>
+                                <li>Профессиональный дизайн с брендингом</li>
+                                <li>Быстро: 2 минуты вместо 20</li>
+                                <li>История всех инвойсов</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ОБУЧЕНИЕ -->
+            <section id="learning" class="section">
+                <div class="section-header">
+                    <h2>📚 Модуль "ОБУЧЕНИЕ И РАЗВИТИЕ"</h2>
+                    <p>Структурированная система развития навыков для всех уровней</p>
+                </div>
+
+                <div class="mega-card">
+                    <h3>🎓 Два трека обучения</h3>
+                    <p style="font-size: 1.3em; margin-top: 20px;">
+                        Система обучения адаптируется под роль пользователя: для стажеров - обязательный онбординг,
+                        для опытных сотрудников - повышение квалификации.
+                    </p>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>👶 Трек для стажеров</h3>
+                        <p>3 обязательных теста для адаптации</p>
+                    </div>
+
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Тест</th>
+                                <th>Что изучается</th>
+                                <th>Баллы на курсе</th>
+                                <th>П-коины в боте</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>1. Онбординг в Партнеркин</strong></td>
+                                <td>История компании, ценности, структура, процессы</td>
+                                <td>До 100</td>
+                                <td>0 (не начисляются)</td>
+                            </tr>
+                            <tr>
+                                <td><strong>2. Основы эффективной коммуникации</strong></td>
+                                <td>Корпоративный стиль общения, каналы связи, этикет</td>
+                                <td>До 100</td>
+                                <td>0 (не начисляются)</td>
+                            </tr>
+                            <tr>
+                                <td><strong>3. Эффективная работа в режиме многозадачности</strong></td>
+                                <td>Тайм-менеджмент, приоритизация, инструменты</td>
+                                <td>До 100</td>
+                                <td>0 (не начисляются)</td>
+                            </tr>
+                            <tr style="background: #d4edda;">
+                                <td colspan="3"><strong>ИТОГО после завершения всех 3 тестов:</strong></td>
+                                <td><strong>400 П-коинов</strong> 🎉</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="instruction-box">
+                        <h4>📖 Как проходить тесты стажеру:</h4>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"📚 Обучение и развитие"</strong> → <strong>"🎓 Курсы"</strong></li>
+                            <li>Выбрать один из 3 доступных тестов</li>
+                            <li>Перейти по ссылке на курс (откроется внешняя платформа)</li>
+                            <li>Пройти курс полностью до конца</li>
+                            <li>На финальной странице увидеть результат (баллы до 100)</li>
+                            <li><strong>Сделать скриншот</strong> страницы с результатом</li>
+                            <li>Вернуться в бот → <strong>"Пройти тестирование"</strong></li>
+                            <li>Выбрать тест, который прошли</li>
+                            <li>Отправить скриншот</li>
+                            <li>Указать количество баллов (от 0 до 100)</li>
+                            <li>Дождаться проверки администратора</li>
+                        </ol>
+
+                        <div class="warning-box" style="margin-top: 30px;">
+                            <h4>⚠️ Важно для стажеров!</h4>
+                            <ul>
+                                <li><strong>За прохождение тестов П-коины НЕ начисляются</strong></li>
+                                <li>Баллы (до 100) получаются только на платформе курсов</li>
+                                <li><strong>400 П-коинов</strong> начисляются ОДИН РАЗ после завершения всех 3 тестов</li>
+                                <li>После этого нужно будет написать приветствие команде</li>
+                                <li>И только потом открывается полный доступ ко всем функциям</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>📊 Отслеживание прогресса</h4>
+                        <p>Зайти в <strong>"📊 Мой прогресс"</strong> - увидеть:</p>
+                        <ul>
+                            <li>✅ Завершенные тесты (зеленая галочка)</li>
+                            <li>⏳ Незавершенные тесты (часики)</li>
+                            <li><strong>"Завершено: X/3"</strong> - понятно, сколько осталось</li>
+                            <li>Заработанные баллы на курсах</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>👔 Трек для старичков</h3>
+                        <p>4 курса повышения квалификации</p>
+                    </div>
+
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Курс</th>
+                                <th>Что изучается</th>
+                                <th>Награда</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>1. Информационный стиль и редактура текста</strong></td>
+                                <td>Написание текстов, редактирование, работа с контентом</td>
+                                <td><strong>До 100 П-коинов</strong></td>
+                            </tr>
+                            <tr>
+                                <td><strong>2. Тайм-менеджмент</strong></td>
+                                <td>Управление временем, планирование, продуктивность</td>
+                                <td><strong>До 100 П-коинов</strong></td>
+                            </tr>
+                            <tr>
+                                <td><strong>3. Стресс-менеджмент</strong></td>
+                                <td>Управление стрессом, эмоции, выгорание</td>
+                                <td><strong>До 100 П-коинов</strong></td>
+                            </tr>
+                            <tr>
+                                <td><strong>4. Work-Life balance: профилактика эмоционального выгорания</strong></td>
+                                <td>Баланс работы и жизни, забота о себе</td>
+                                <td><strong>До 100 П-коинов</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="highlight-box">
+                        <h4>💰 Система начисления П-коинов:</h4>
+                        <p style="font-size: 1.2em; margin-bottom: 20px;">
+                            В отличие от стажеров, <strong>старички получают П-коины за КАЖДЫЙ курс</strong> сразу после одобрения администратором!
+                        </p>
+                        <ul>
+                            <li>Прошли курс на 100 баллов → получили 100 П-коинов</li>
+                            <li>Прошли курс на 85 баллов → получили 85 П-коинов</li>
+                            <li>Можно проходить курсы в любом порядке</li>
+                            <li>Можно проходить параллельно несколько курсов</li>
+                        </ul>
+                    </div>
+
+                    <div class="instruction-box">
+                        <h4>📖 Как проходить курсы старичку:</h4>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"📚 Обучение и развитие"</strong> → <strong>"🎓 Курсы"</strong></li>
+                            <li>Выбрать курс из 4 доступных (видны только курсы для старичков)</li>
+                            <li>Пройти курс на внешней платформе</li>
+                            <li>Сделать скриншот результата</li>
+                            <li>Отправить заявку с указанием баллов</li>
+                            <li><strong>Получить П-коины сразу после одобрения!</strong></li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="info-box">
+                    <h4>🎯 Зачем нужны два трека?</h4>
+                    <ul>
+                        <li><strong>Для стажеров:</strong> Фокус на адаптации, понимании компании. П-коины - это награда за завершение всего пути, не промежуточный результат</li>
+                        <li><strong>Для старичков:</strong> Мотивация на постоянное развитие через немедленную награду за каждое достижение</li>
+                        <li><strong>Для компании:</strong> Понятная система: новички сначала учатся, опытные - развиваются и получают бонусы</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- РАЗВЛЕЧЕНИЯ -->
+            <section id="fun" class="section">
+                <div class="section-header">
+                    <h2>🎮 Модуль "РАЗВЛЕЧЕНИЯ"</h2>
+                    <p>Геймификация и отдых - важная часть корпоративной культуры</p>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>⚔️ PVP Сражения</h3>
+                        <p>Соревновательная механика для азарта и взаимодействия</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>🎯 Как работают PVP сражения</h4>
+
+                        <div class="info-box">
+                            <h4>📊 Механика:</h4>
+                            <ul>
+                                <li><strong>Стоимость боя:</strong> 10 П-коинов + 20 энергии</li>
+                                <li><strong>Максимум энергии:</strong> 100 (хватает на 5 боев подряд)</li>
+                                <li><strong>Исход:</strong> 50/50 случайный</li>
+                                <li><strong>Награда победителю:</strong> 20 П-коинов (своя ставка + ставка противника)</li>
+                                <li><strong>Проигравший:</strong> Теряет 10 П-коинов</li>
+                            </ul>
+                        </div>
+
+                        <h5 style="margin-top: 40px; font-size: 1.4em;">Как сразиться:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"🎮 Развлечения"</strong> → <strong>"⚔️ PVP Сражения"</strong></li>
+                            <li>Выбрать <strong>"Найти соперника"</strong></li>
+                            <li>Увидеть список всех пользователей с балансами</li>
+                            <li>Выбрать соперника</li>
+                            <li>Подтвердить бой (списывается 10 П-коинов и 20 энергии)</li>
+                            <li>Получить результат: победа или поражение</li>
+                            <li>Оба участника получают уведомления о результате</li>
+                        </ol>
+
+                        <div class="highlight-box">
+                            <h4>🎁 Зачем нужны PVP сражения:</h4>
+                            <ul>
+                                <li><strong>Азарт и адреналин:</strong> Шанс удвоить ставку или потерять её</li>
+                                <li><strong>Социальное взаимодействие:</strong> Повод пообщаться с коллегами</li>
+                                <li><strong>Мотивация зарабатывать:</strong> Чтобы было на что сражаться</li>
+                                <li><strong>Рейтинг:</strong> Можно стать топ-1 по победам</li>
+                                <li><strong>Развлечение:</strong> Отдых от рабочих задач</li>
+                            </ul>
+                        </div>
+
+                        <div class="warning-box">
+                            <h4>⚠️ Защита от эксплуатации:</h4>
+                            <ul>
+                                <li>Нельзя сражаться с самим собой</li>
+                                <li>Ограничение по энергии (восстанавливается со временем)</li>
+                                <li>Проверка баланса (нельзя играть без П-коинов)</li>
+                                <li>История всех сражений для прозрачности</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🛒 Магазин наград</h3>
+                        <p>Обмен виртуальных П-коинов на реальные призы</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>💰 Что можно купить</h4>
+
+                        <table class="comparison-table">
+                            <thead>
+                                <tr>
+                                    <th>Награда</th>
+                                    <th>Стоимость</th>
+                                    <th>Что получаешь</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>🏖️ Выходной день</strong></td>
+                                    <td>1500 П-коинов</td>
+                                    <td>Дополнительный оплачиваемый выходной</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>👕 Мерч компании</strong></td>
+                                    <td>800 П-коинов</td>
+                                    <td>Фирменная футболка, худи или кружка</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>☕ Кофе с руководителем</strong></td>
+                                    <td>500 П-коинов</td>
+                                    <td>Личная встреча 1-на-1 с CEO или директором</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>🎁 Сюрприз от HR</strong></td>
+                                    <td>300 П-коинов</td>
+                                    <td>Что-то приятное и неожиданное</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="instruction-box">
+                            <h4>🛍️ Как купить:</h4>
+                            <ol class="step-list">
+                                <li>Накопить нужное количество П-коинов</li>
+                                <li>Зайти в <strong>"🎮 Развлечения"</strong> → <strong>"🛒 Магазин"</strong></li>
+                                <li>Выбрать награду</li>
+                                <li>Подтвердить покупку</li>
+                                <li>HR получает уведомление о покупке</li>
+                                <li>Награда будет выдана в течение недели</li>
+                            </ol>
+                        </div>
+
+                        <div class="highlight-box">
+                            <h4>💡 Психология награ</h4>
+                            <ul>
+                                <li><strong>Материальная мотивация:</strong> П-коины превращаются в реальные призы</li>
+                                <li><strong>Достижимость:</strong> 300-1500 - можно накопить за 1-2 месяца</li>
+                                <li><strong>Выбор:</strong> Каждый выбирает то, что важно именно ему</li>
+                                <li><strong>Статус:</strong> Купил выходной = показал себя активным сотрудником</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🎯 Мероприятия</h3>
+                        <p>Корпоративные события для сплочения команды</p>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <div class="feature-icon">🏃‍♂️</div>
+                            <h5>Зарядка</h5>
+                            <p>Утренняя активность 3 раза в неделю. Приходи, заряжайся энергией, общайся. Награда: 20 П-коинов</p>
+                        </div>
+
+                        <div class="feature-card">
+                            <div class="feature-icon">🎰</div>
+                            <h5>Покер</h5>
+                            <p>Вечерняя игра по пятницам. Азарт, стратегия, команда. Награда: 30 П-коинов</p>
+                        </div>
+
+                        <div class="feature-card">
+                            <div class="feature-icon">🎉</div>
+                            <h5>Корпоратив</h5>
+                            <p>Тематические вечеринки раз в месяц. Отдых, общение, развлечения. Награда: 50 П-коинов</p>
+                        </div>
+
+                        <div class="feature-card">
+                            <div class="feature-icon">📚</div>
+                            <h5>Тренинги</h5>
+                            <p>Профессиональные воркшопы. Развитие навыков, обмен опытом. Награда: 40 П-коинов</p>
+                        </div>
+                    </div>
+
+                    <div class="instruction-box">
+                        <h4>📅 Как записаться на мероприятие:</h4>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"🎯 Мероприятия"</strong></li>
+                            <li>Выбрать <strong>"📅 Все мероприятия"</strong></li>
+                            <li>Увидеть список: название, дата, время, свободные места</li>
+                            <li>Выбрать мероприятие</li>
+                            <li>Нажать <strong>"Записаться"</strong></li>
+                            <li>За час до начала придет напоминание</li>
+                            <li>После мероприятия - автоматическое начисление П-коинов</li>
+                        </ol>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>🎁 Преимущества системы мероприятий:</h4>
+                        <ul>
+                            <li><strong>Удобная запись:</strong> Не нужно писать в чаты или таблицы</li>
+                            <li><strong>Напоминания:</strong> Не забудешь про событие</li>
+                            <li><strong>Мотивация участвовать:</strong> Получаешь П-коины за участие</li>
+                            <li><strong>Видно участников:</strong> Знаешь, кто еще придет</li>
+                            <li><strong>Отмена записи:</strong> Если планы изменились - можно легко отменить</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🏆 Рейтинги</h3>
+                        <p>Соревновательный дух и признание лучших</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>📊 Топ игроков</h4>
+                        <p>Зайти в <strong>"🎮 Развлечения"</strong> → <strong>"🏆 Рейтинг"</strong> - увидеть:</p>
+                        <ul>
+                            <li><strong>Топ по П-коинам:</strong> Кто накопил больше всех</li>
+                            <li><strong>Топ по PVP победам:</strong> Самые азартные бойцы</li>
+                            <li><strong>Топ по задачам:</strong> Кто выполнил больше всех</li>
+                            <li><strong>Топ по обучению:</strong> Кто прошел больше курсов</li>
+                        </ul>
+
+                        <div class="highlight-box" style="margin-top: 30px;">
+                            <h4>🎯 Зачем нужны рейтинги:</h4>
+                            <ul>
+                                <li><strong>Мотивация:</strong> Стремление попасть в топ-3</li>
+                                <li><strong>Признание:</strong> Видимость достижений для всей команды</li>
+                                <li><strong>Соревнование:</strong> Здоровая конкуренция</li>
+                                <li><strong>Прозрачность:</strong> Понятно, кто активен в команде</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- СОЦИАЛЬНОЕ -->
+            <section id="social" class="section">
+                <div class="section-header">
+                    <h2>🤝 Социальные функции</h2>
+                    <p>Укрепление связей и корпоративной культуры</p>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🎁 Подарки П-коинов</h3>
+                        <p>Возможность отблагодарить коллегу или поддержать</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>💝 Как подарить П-коины</h4>
+
+                        <div class="info-box">
+                            <h4>📋 Правила:</h4>
+                            <ul>
+                                <li><strong>Сумма:</strong> От 5 до 50 П-коинов за раз</li>
+                                <li><strong>Лимит:</strong> Максимум 50 П-коинов в день</li>
+                                <li><strong>Сообщение:</strong> Обязательно написать, за что дарите</li>
+                                <li><strong>Нельзя:</strong> Дарить самому себе</li>
+                            </ul>
+                        </div>
+
+                        <h5 style="margin-top: 40px; font-size: 1.4em;">Как подарить:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"💰 Личный кабинет"</strong> → <strong>"💸 Отправить П-коины"</strong></li>
+                            <li>Выбрать получателя из списка</li>
+                            <li>Указать сумму (5-50)</li>
+                            <li>Написать сообщение (например: "Спасибо за помощь с проектом!")</li>
+                            <li>Подтвердить отправку</li>
+                            <li>Получатель мгновенно получит уведомление с вашим сообщением</li>
+                        </ol>
+
+                        <div class="highlight-box">
+                            <h4>💚 Зачем дарить П-коины:</h4>
+                            <ul>
+                                <li><strong>Благодарность:</strong> Отблагодарить за помощь материально</li>
+                                <li><strong>Поддержка:</strong> Помочь коллеге накопить на что-то важное</li>
+                                <li><strong>Мотивация:</strong> Признать чей-то вклад</li>
+                                <li><strong>Команда:</strong> Укрепление связей через взаимопомощь</li>
+                                <li><strong>Культура:</strong> Формирование традиции признания заслуг</li>
+                            </ul>
+                        </div>
+
+                        <div class="function-item">
+                            <h4>📜 История операций</h4>
+                            <p>Зайти в <strong>"📜 История операций"</strong> - увидеть:</p>
+                            <ul>
+                                <li>Все полученные подарки с сообщениями</li>
+                                <li>Все отправленные подарки</li>
+                                <li>Покупки в магазине</li>
+                                <li>Выигрыши и проигрыши в PVP</li>
+                                <li>Начисления за задачи и курсы</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-showcase">
+                    <div class="module-header">
+                        <h3>🎉 Система достижений "Похвастаться"</h3>
+                        <p>Социальная функция для публичного признания успехов</p>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>🏆 Как поделиться достижением</h4>
+
+                        <p style="font-size: 1.2em; margin-bottom: 30px;">
+                            Закрыл крупную сделку? Запустил проект? Научился новому? Поделись с командой!
+                        </p>
+
+                        <h5 style="margin-top: 30px; font-size: 1.4em;">Как создать пост:</h5>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"🎉 Социальное"</strong> → <strong>"Похвастаться"</strong></li>
+                            <li>Написать <strong>текст достижения</strong> (что сделал, чем горд)</li>
+                            <li>Приложить <strong>фото</strong> (опционально, но рекомендуется)</li>
+                            <li>Отправить</li>
+                            <li><strong>Все пользователи получат сообщение с твоим достижением!</strong></li>
+                            <li>Коллеги смогут поставить лайк 👍 или написать комментарий 💬</li>
+                            <li>Ты получишь уведомления о каждой реакции</li>
+                        </ol>
+
+                        <div class="highlight-box">
+                            <h4>✨ Примеры достижений:</h4>
+                            <ul>
+                                <li>"Закрыл сделку на 500К! 🎉 3 месяца работы, но мы это сделали!"</li>
+                                <li>"Запустили новый сайт в продакшн! Команда - вы лучшие!"</li>
+                                <li>"Прошел сертификацию по маркетингу. Теперь официальный эксперт!"</li>
+                                <li>"Наша статья набрала 100К просмотров за неделю!"</li>
+                            </ul>
+                        </div>
+
+                        <div class="info-box">
+                            <h4>💡 Зачем нужна функция "Похвастаться":</h4>
+                            <ul>
+                                <li><strong>Признание:</strong> Публичное празднование успехов</li>
+                                <li><strong>Мотивация:</strong> Другие видят достижения и хотят так же</li>
+                                <li><strong>Прозрачность:</strong> Все знают, кто и чем занимается</li>
+                                <li><strong>Команда:</strong> Общая радость за успехи коллег</li>
+                                <li><strong>Культура:</strong> Традиция делиться хорошими новостями</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="function-item">
+                        <h4>💬 Реакции на достижения</h4>
+
+                        <p style="font-size: 1.2em; margin-bottom: 30px;">
+                            Когда кто-то делится достижением, ты можешь:
+                        </p>
+
+                        <ul>
+                            <li><strong>👍 Поставить лайк:</strong> Нажать "Лайк" - автор получит уведомление</li>
+                            <li><strong>💬 Написать комментарий:</strong> Поздравить, задать вопрос, выразить поддержку</li>
+                            <li><strong>📖 Просмотреть ленту:</strong> Зайти в "Достижения" - увидеть все посты</li>
+                        </ul>
+
+                        <div class="highlight-box" style="margin-top: 30px;">
+                            <h4>🌟 Это мини-социальная сеть внутри компании:</h4>
+                            <p>Вместо того чтобы хорошие новости терялись в рабочих чатах, они становятся видимыми для всех и живут в специальной ленте достижений.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ИНСТРУКЦИИ -->
+            <section id="instructions" class="section">
+                <div class="section-header">
+                    <h2>📖 Быстрый старт</h2>
+                    <p>Как начать работать с ботом за 5 минут</p>
+                </div>
+
+                <div class="mega-card">
+                    <h3>🚀 Первые шаги в VPartnerkin</h3>
+
+                    <div class="instruction-box">
+                        <h4>1️⃣ Регистрация (первый вход)</h4>
+                        <ol class="step-list">
+                            <li>Написать боту <strong>/start</strong></li>
+                            <li>Выбрать роль: <strong>Стажер</strong> или <strong>Старичок</strong></li>
+                            <li>Указать <strong>ФИО</strong></li>
+                            <li>Указать <strong>должность</strong></li>
+                            <li>Если старичок - выбрать уровень (Junior/Middle/Senior/Head/C-Level)</li>
+                            <li>Если стажер - написать краткое био</li>
+                            <li>Готово! Вы в системе 🎉</li>
+                        </ol>
+                    </div>
+
+                    <div class="instruction-box">
+                        <h4>2️⃣ Знакомство с интерфейсом</h4>
+                        <p style="font-size: 1.2em; margin-bottom: 20px;">Главное меню показывает кнопки с разделами:</p>
+                        <ul>
+                            <li><strong>💰 Личный кабинет:</strong> Баланс, подарки, история</li>
+                            <li><strong>📚 Обучение и развитие:</strong> Курсы и прогресс</li>
+                            <li><strong>💼 Работа:</strong> Задачи, отпуска, контакты</li>
+                            <li><strong>🎮 Развлечения:</strong> PVP, магазин, мероприятия, рейтинги</li>
+                            <li><strong>🎉 Социальное:</strong> Достижения, подарки</li>
+                        </ul>
+                    </div>
+
+                    <div class="instruction-box">
+                        <h4>3️⃣ Первые действия стажера</h4>
+                        <ol class="step-list">
+                            <li>Зайти в <strong>"📚 Обучение и развитие"</strong></li>
+                            <li>Начать прохождение первого теста</li>
+                            <li>Следить за прогрессом в <strong>"📊 Мой прогресс"</strong></li>
+                            <li>После 3 тестов - написать приветствие команде</li>
+                            <li>Получить 400 П-коинов и статус Junior</li>
+                            <li>Начать пользоваться всеми функциями!</li>
+                        </ol>
+                    </div>
+
+                    <div class="instruction-box">
+                        <h4>4️⃣ Первые действия старичка</h4>
+                        <ol class="step-list">
+                            <li>Изучить главное меню - увидеть все доступные функции</li>
+                            <li>Зайти в <strong>"💰 Мой баланс"</strong> - увидеть стартовые 400 П-коинов</li>
+                            <li>Попробовать создать задачу в <strong>"💼 Работа"</strong></li>
+                            <li>Записаться на мероприятие</li>
+                            <li>Подарить П-коины коллеге</li>
+                            <li>Начать проходить курсы для заработка</li>
+                            <li>Попробовать PVP сражения</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="highlight-box">
+                    <h4>💡 Полезные советы</h4>
+                    <ul>
+                        <li><strong>Навигация:</strong> Всегда есть кнопка "🔙 Назад" или "🔄 Главное меню"</li>
+                        <li><strong>Уведомления:</strong> Бот сам напомнит о задачах, мероприятиях, реакциях</li>
+                        <li><strong>Помощь:</strong> В каждом разделе есть подсказки, что делать</li>
+                        <li><strong>Баланс:</strong> Всегда виден в главном меню</li>
+                        <li><strong>Активность:</strong> Чем активнее - тем больше П-коинов</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- ЗАКЛЮЧЕНИЕ -->
+            <section class="section">
+                <div class="section-header">
+                    <h2>🎯 Заключение</h2>
+                    <p>VPartnerkin - это больше чем бот</p>
+                </div>
+
+                <div class="mega-card">
+                    <h3>🌟 Это платформа для:</h3>
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h5>📚 Обучения</h5>
+                            <p>Структурированное развитие от новичка до эксперта</p>
+                        </div>
+                        <div class="feature-card">
+                            <h5>💼 Работы</h5>
+                            <p>Эффективное управление задачами и процессами</p>
+                        </div>
+                        <div class="feature-card">
+                            <h5>🎮 Мотивации</h5>
+                            <p>Геймификация делает работу интереснее</p>
+                        </div>
+                        <div class="feature-card">
+                            <h5>🤝 Команды</h5>
+                            <p>Социальные связи и корпоративная культура</p>
+                        </div>
+                        <div class="feature-card">
+                            <h5>📈 Роста</h5>
+                            <p>Видимый карьерный путь и признание заслуг</p>
+                        </div>
+                        <div class="feature-card">
+                            <h5>🎉 Жизни</h5>
+                            <p>Work-Life баланс через мероприятия и отдых</p>
+                        </div>
+                    </div>
+
+                    <div class="stats-showcase" style="margin-top: 60px;">
+                        <div class="stat-box">
+                            <div class="stat-number">100%</div>
+                            <div class="stat-label">Автоматизация онбординга</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number">10+</div>
+                            <div class="stat-label">Модулей функционала</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number">24/7</div>
+                            <div class="stat-label">Доступность</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number">∞</div>
+                            <div class="stat-label">Возможностей для роста</div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top: 60px;">
+                        <h4 style="font-size: 2.5em; text-align: center;">🚀 VPartnerkin - это инвестиция в культуру и эффективность компании</h4>
+                        <p style="font-size: 1.3em; text-align: center; margin-top: 30px;">
+                            От первого дня новичка до карьерных вершин опытного сотрудника -
+                            бот сопровождает каждого, делая путь понятным, интересным и мотивирующим.
+                        </p>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <div class="footer">
+            <h3>VPartnerkin Bot v2.0</h3>
+            <p>Полное руководство пользователя</p>
+            <p>Дата создания: 09.10.2025</p>
+            <p style="margin-top: 30px; font-size: 1.4em;">Разработано с ❤️ для команды Партнеркино</p>
+        </div>
+    </div>
+</body>
+</html>
